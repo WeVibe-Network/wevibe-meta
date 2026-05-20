@@ -1,0 +1,29 @@
+{
+  "name": "wevibe-integration-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:e2e": "vitest run --dir e2e",
+    "test:leader": "vitest run --dir leader",
+    "test:moderator": "vitest run --dir moderator",
+    "test:contributor": "vitest run --dir contributor",
+    "test:consumer": "vitest run --dir consumer",
+    "leader": "tsx leader/index.ts",
+    "moderator": "tsx moderator/index.ts",
+    "contributor": "tsx contributor/index.ts",
+    "consumer": "tsx consumer/index.ts",
+    "seed": "tsx lib/seeder.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "wevibe-sdk-wasm": "file:../WeVibe/wevibe-sdk/crates/wevibe-sdk-wasm/pkg-nodejs"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0",
+    "@types/node": "^22.0.0"
+  }
+}

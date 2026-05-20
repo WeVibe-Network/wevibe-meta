@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "wevibe-docs": "git@github.com:WeVibe-Network/wevibe-docs.git",
+    "wevibe-protocol": "git@github.com:WeVibe-Network/wevibe-protocol.git",
+    "wevibe-chain": "git@github.com:WeVibe-Network/wevibe-chain.git",
+    "wevibe-server": "git@github.com:WeVibe-Network/wevibe-server.git",
+    "wevibe-sdk": "git@github.com:WeVibe-Network/wevibe-sdk.git",
+    "wevibe-mcp": "git@github.com:WeVibe-Network/wevibe-mcp.git",
+    "wevibe-opencode-plugin": "git@github.com:WeVibe-Network/wevibe-opencode-plugin.git",
+    "wevibe-guard": "git@github.com:WeVibe-Network/wevibe-guard.git",
+    "wevibe-umbral": "git@github.com:WeVibe-Network/wevibe-umbral.git",
+    "wevibe-social-graph": "git@github.com:WeVibe-Network/wevibe-social-graph.git"
+  }
+}
