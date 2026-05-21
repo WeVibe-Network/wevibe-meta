@@ -9,7 +9,13 @@
 WORKSPACE_ROOT := $(abspath ..)
 WEVIBE_SERVER_DIR := $(WORKSPACE_ROOT)/wevibe-server
 
+# Proto generation image pins. R-DOCKER-PINNED — never use :latest.
+# See DECISIONS.md D-14.21 / R-PROTO-REGEN.
+PROTO_COSMOS_IMAGE  := ghcr.io/cosmos/proto-builder:0.18.1
+PROTO_BUF_IMAGE     := bufbuild/buf:1.34.0
+
 .PHONY: stop-host docker-up docker-down health dogfood dogfood-health dogfood-pipeline clean wevibe-mcp-token
+.PHONY: proto-gen proto-gen-chain proto-gen-umbral
 
 # ─── Host process cleanup ───────────────────────────────────────────────────
 # Per CO-253: WeVibe services run in Docker, not on host. This target kills
@@ -77,3 +83,22 @@ clean: docker-down stop-host
 
 wevibe-mcp-token:
 	@docker exec wevibe-mcp cat /root/.wevibe/mcp-session-token
+
+# ─── Proto generation (R-PROTO-REGEN / R-DOCKER-PINNED / R-NO-LOCAL-PROTOC) ─
+
+proto-gen: proto-gen-chain proto-gen-umbral
+	@echo "=== Proto regeneration complete ==="
+
+proto-gen-chain:
+	@echo "=== Regenerating wevibe-chain proto ==="
+	$(MAKE) -C $(WORKSPACE_ROOT)/wevibe-chain proto-gen
+	@echo "    chain proto regenerated."
+
+proto-gen-umbral:
+	@echo "=== Regenerating wevibe-server umbral sidecar proto ==="
+	docker run --rm \
+		-v "$(WORKSPACE_ROOT):/workspace" \
+		-w "/workspace/wevibe-umbral/proto/umbral/v1" \
+		$(PROTO_BUF_IMAGE) generate sidecar.proto \
+		--template '{"version":"v1","plugins":[{"plugin":"buf.build/protocolbuffers/go:v1.36.11","out":"/workspace/wevibe-server/wevibe-hub/internal/umbral/umbralpb","opt":"paths=source_relative"},{"plugin":"buf.build/grpc/go:v1.6.2","out":"/workspace/wevibe-server/wevibe-hub/internal/umbral/umbralpb","opt":"paths=source_relative"}]}'
+	@echo "    umbral pb.go regenerated."
