@@ -4,6 +4,7 @@
 set -euo pipefail
 
 WEVIBE_ROOT="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_ROOT="$(cd "$WEVIBE_ROOT/.." && pwd)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -30,9 +31,7 @@ info "Stopping all services..."
 "$WEVIBE_ROOT/stop.sh" 2>/dev/null || true
 echo ""
 
-cd "$WEVIBE_ROOT"
-
-docker compose -f wevibe-server/docker-compose.yml down -v > /dev/null 2>&1 || true
+(cd "$WORKSPACE_ROOT/wevibe-server" && docker compose down -v) > /dev/null 2>&1 || true
 ok "Docker containers and volumes removed"
 
 if [ -d "$WEVIBE_ROOT/.qdrant-data" ]; then
@@ -49,19 +48,19 @@ fi
 rm -rf "$WEVIBE_ROOT/.logs" "$WEVIBE_ROOT/.pids"
 ok "Cleared logs and PIDs"
 
-DASH_DIR="$WEVIBE_ROOT/wevibe-server/wevibe-dashboard"
+DASH_DIR="$WORKSPACE_ROOT/wevibe-server/wevibe-dashboard"
 if [ -d "$DASH_DIR/.next" ]; then
   rm -rf "$DASH_DIR/.next"
   ok "Cleared dashboard build cache"
 fi
 
-HUB_DIR="$WEVIBE_ROOT/wevibe-server/wevibe-hub"
+HUB_DIR="$WORKSPACE_ROOT/wevibe-server/wevibe-hub"
 if [ -f "$HUB_DIR/wevibe-hub" ]; then
   rm -f "$HUB_DIR/wevibe-hub"
   ok "Removed hub binary (will rebuild on next start)"
 fi
 
-CHAIN_DIR="$WEVIBE_ROOT/wevibe-chain"
+CHAIN_DIR="$WORKSPACE_ROOT/wevibe-chain"
 if [ -f "$CHAIN_DIR/wevibed" ]; then
   rm -f "$CHAIN_DIR/wevibed"
   ok "Removed chain binary (will rebuild on next start)"

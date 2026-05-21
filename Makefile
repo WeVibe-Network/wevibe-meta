@@ -17,7 +17,7 @@ stop-host:
 	@pkill -f "wevibed start" 2>/dev/null || true
 	@pkill -f "next-server (v" 2>/dev/null || true
 	@pkill -f "next dev" 2>/dev/null || true
-	@pkill -f "WeVibe/wevibe-mcp/dist/server.js" 2>/dev/null || true
+	@pkill -f "/wevibe-workspace/wevibe-mcp/dist/server.js" 2>/dev/null || true
 	@pkill -f "wevibe-mcp/dist/server.js" 2>/dev/null || true
 	@sleep 1
 	@echo "Host processes cleaned. (Ollama left alone — see DECISIONS.md D-13.10.)"

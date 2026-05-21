@@ -2,8 +2,9 @@
 # Chunk 3: Gather dashboard files for audit
 # Focus: hub-client API calls, moderation page, billing/credits, env config
 
-BASE="/Users/jerrysmith/Desktop/WeVibe"
-OUT="$(pwd)/wevibe-dashboard-audit-chunk3.txt"
+META_ROOT="$(cd "$(dirname "$0")" && pwd)"
+BASE="$(cd "$META_ROOT/.." && pwd)"
+OUT="$META_ROOT/wevibe-dashboard-audit-chunk3.txt"
 
 echo "=== WeVibe Dashboard Audit - Chunk 3 ===" > "$OUT"
 echo "Generated: $(date)" >> "$OUT"

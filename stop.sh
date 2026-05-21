@@ -3,6 +3,7 @@
 set -euo pipefail
 
 WEVIBE_ROOT="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_ROOT="$(cd "$WEVIBE_ROOT/.." && pwd)"
 PID_DIR="$WEVIBE_ROOT/.pids"
 
 RED='\033[0;31m'
@@ -50,10 +51,9 @@ stop_pid "wevibe-mcp" "mcp.pid"
 stop_pid "wevibe-hub" "hub.pid"
 stop_pid "wevibe-chain" "chain.pid"
 
-cd "$WEVIBE_ROOT"
-docker compose -f wevibe-server/docker-compose.yml stop hub 2>/dev/null || true
-docker compose -f wevibe-server/docker-compose.yml rm -f hub 2>/dev/null || true
-docker compose -f wevibe-server/docker-compose.yml stop 2>/dev/null || true
+(cd "$WORKSPACE_ROOT/wevibe-server" && docker compose stop wevibe-hub) 2>/dev/null || true
+(cd "$WORKSPACE_ROOT/wevibe-server" && docker compose rm -f wevibe-hub) 2>/dev/null || true
+(cd "$WORKSPACE_ROOT/wevibe-server" && docker compose stop) 2>/dev/null || true
 ok "Docker containers stopped (volumes preserved)"
 
 for pattern in "wevibe-hub" "wevibed start"; do

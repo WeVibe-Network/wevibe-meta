@@ -4,6 +4,7 @@
 set -euo pipefail
 
 WEVIBE_ROOT="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_ROOT="$(cd "$WEVIBE_ROOT/.." && pwd)"
 PID_DIR="$WEVIBE_ROOT/.pids"
 LOG_DIR="$WEVIBE_ROOT/.logs"
 
@@ -104,16 +105,16 @@ fi
 
 cd "$WEVIBE_ROOT"
 
-docker compose -f wevibe-server/docker-compose.yml rm -f hub 2>/dev/null || true
-docker compose -f wevibe-server/docker-compose.yml up -d --wait postgres qdrant 2>&1 | grep -v -E "(Conflict|already in use|stopping)" | grep -v "^$" || true
-ok "Docker services started (postgres, qdrant)"
+(cd "$WORKSPACE_ROOT/wevibe-server" && docker compose rm -f wevibe-hub) 2>/dev/null || true
+(cd "$WORKSPACE_ROOT/wevibe-server" && docker compose up -d --wait wevibe-postgres wevibe-qdrant) 2>&1 | grep -v -E "(Conflict|already in use|stopping)" | grep -v "^$" || true
+ok "Docker services started (wevibe-postgres, wevibe-qdrant)"
 
 wait_for_pg 30
 wait_for "Qdrant" "http://localhost:6333/healthz" 30
 
 if [ "$SKIP_CHAIN" = false ]; then
   info "Starting wevibe-chain..."
-  CHAIN_DIR="$WEVIBE_ROOT/wevibe-chain"
+  CHAIN_DIR="$WORKSPACE_ROOT/wevibe-chain"
   CHAIN_HOME="$HOME/.wevibed"
 
   kill_pid "$PID_DIR/chain.pid"
@@ -171,7 +172,7 @@ else
 fi
 
 info "Starting wevibe-hub..."
-HUB_DIR="$WEVIBE_ROOT/wevibe-server/wevibe-hub"
+HUB_DIR="$WORKSPACE_ROOT/wevibe-server/wevibe-hub"
 
 kill_pid "$PID_DIR/hub.pid"
 pkill -f "wevibe-hub" 2>/dev/null || true
@@ -212,7 +213,7 @@ wait_for "wevibe-hub" "http://localhost:4440/health" 15
 
 # ── wevibe-mcp ──────────────────────────────────────────────
 info "Starting wevibe-mcp..."
-MCP_DIR="$WEVIBE_ROOT/WeVibe/wevibe-mcp"
+MCP_DIR="$WORKSPACE_ROOT/wevibe-mcp"
 
 kill_pid "$PID_DIR/mcp.pid"
 
@@ -237,7 +238,7 @@ wait_for "wevibe-mcp HTTP" "http://127.0.0.1:4450/v1/health" 15
 
 if [ "$SKIP_DASHBOARD" = false ]; then
   info "Starting wevibe-dashboard..."
-  DASH_DIR="$WEVIBE_ROOT/wevibe-server/wevibe-dashboard"
+  DASH_DIR="$WORKSPACE_ROOT/wevibe-server/wevibe-dashboard"
 
   kill_pid "$PID_DIR/dashboard.pid"
   pkill -f "next dev.*wevibe-dashboard" 2>/dev/null || true
