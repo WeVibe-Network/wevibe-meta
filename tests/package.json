@@ -18,7 +18,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "wevibe-sdk-wasm": "file:../WeVibe/wevibe-sdk/crates/wevibe-sdk-wasm/pkg-nodejs"
+    "wevibe-sdk-wasm": "file:../../wevibe-sdk/pkg-nodejs"
   },
   "devDependencies": {
     "tsx": "^4.19.0",

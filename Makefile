@@ -6,6 +6,9 @@
 #
 # `make dogfood` orchestrates Docker stack + test pipeline.
 
+WORKSPACE_ROOT := $(abspath ..)
+WEVIBE_SERVER_DIR := $(WORKSPACE_ROOT)/wevibe-server
+
 .PHONY: stop-host docker-up docker-down health dogfood dogfood-health dogfood-pipeline clean wevibe-mcp-token
 
 # ─── Host process cleanup ───────────────────────────────────────────────────
@@ -19,6 +22,8 @@ stop-host:
 	@pkill -f "next dev" 2>/dev/null || true
 	@pkill -f "/wevibe-workspace/wevibe-mcp/dist/server.js" 2>/dev/null || true
 	@pkill -f "wevibe-mcp/dist/server.js" 2>/dev/null || true
+	@pkill -f "/Echo/echo-mcp/dist/server.js" 2>/dev/null || true
+	@pkill -f "echo-mcp/dist/server.js" 2>/dev/null || true
 	@sleep 1
 	@echo "Host processes cleaned. (Ollama left alone — see DECISIONS.md D-13.10.)"
 
@@ -26,13 +31,15 @@ stop-host:
 
 docker-up:
 	@echo "=== Bringing up WeVibe stack via Docker ==="
-	@cd wevibe-server && docker compose up -d --build
+	@cd "$(WEVIBE_SERVER_DIR)" && docker compose up -d --build
 	@echo "Stack started. Waiting for services to become healthy..."
-	@cd wevibe-server && ./scripts/wait-for-stack-healthy.sh
+	@cd "$(WEVIBE_SERVER_DIR)" && ./scripts/wait-for-stack-healthy.sh
 
 docker-down:
 	@echo "=== Tearing down WeVibe stack and WIPING volumes ==="
-	@cd wevibe-server && docker compose down -v
+	@cd "$(WEVIBE_SERVER_DIR)" && docker compose down -v
+	@docker rm -f wevibe-validator 2>/dev/null || true
+	@docker rm -f echo-validator 2>/dev/null || true
 
 # ─── Health check (against running stack) ──────────────────────────────────
 
@@ -55,6 +62,7 @@ dogfood: stop-host docker-down docker-up dogfood-health dogfood-pipeline docker-
 dogfood-health:
 	@echo ""
 	@echo "=== Stage 1: Service Health ==="
+	@cd tests && npm ci --no-audit --no-fund
 	@cd tests && npx vitest run e2e/service-health.test.ts --reporter=verbose 2>&1
 
 dogfood-pipeline:
