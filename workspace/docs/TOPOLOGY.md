@@ -139,3 +139,128 @@ or opened by sprint 29:
 Remaining open per `wevibe-docs/MASTER.md` Summary: GAP-CHAIN-5 (genesis
 parameter finalization), ARCH-G9 (BIP-32 key hierarchy), and four MINOR
 items.
+
+---
+
+## Sprint 31 — CO-029: Signed Canonical Body Verification Anchor
+
+The Tier 2 verification anchor is the signed-canonical-body pathway. A consumer
+holding `(plaintext, salt)` can prove to the chain that the plaintext was the
+one the contributor committed, without revealing it during the submit flow.
+
+### Three byte-identical canonical body builders
+
+| Implementation | File | Function |
+|---|---|---|
+| MCP | `wevibe-mcp/src/canonical.ts` | `submitMemoryMessage(...)` |
+| Dashboard | `wevibe-server/wevibe-dashboard/lib/wevibe-signing.ts` | `submitMemoryCanonical(...)` |
+| Hub | `wevibe-server/wevibe-hub/internal/verify/canonical.go` | `SubmitMemoryMessage(...)` |
+| Chain | `wevibe-chain/x/memory/keeper/msg_server.go` | `buildSubmitMemoryCanonicalBody(...)` |
+| Chain (query) | `wevibe-chain/x/reputation/keeper/grpc_query.go` | `buildSubmitMemoryCanonicalBody(...)` |
+
+All emit a 10-line UTF-8 byte sequence: domain tag `wevibe.submit_memory.v1` followed by 9 alphabetically-sorted key/value pairs joined by `\n`. The locking test is `wevibe-server/wevibe-hub/internal/verify/canonical_test.go::TestCanonicalBodyCrossLanguageConformance` across three test vectors.
+
+### Cross-module data flow
+
+```
+Contributor (MCP or Dashboard)
+  ├── generate salt (32 random bytes)
+  ├── plaintext_hash    = sha256(salt || plaintext_utf8)
+  ├── ciphertext_hash   = sha256(ciphertext)
+  ├── wrapped_dek_hash  = sha256(wrapped_dek_mod)
+  ├── submission_hash   = sha256(ciphertext || wrapped_dek_mod)
+  ├── canonical body    = 9-field assembly (see above)
+  └── contributor_sig   = Ed25519(privkey, canonical_body)
+
+POST /v1/orgs/{orgID}/submit (NO plaintext field)
+  → wevibe-hub
+       ├── validates plaintext_hash & salt are 64 hex chars
+       ├── re-verifies ed25519 sig over reconstructed canonical body
+       ├── re-derives ciphertext_hash, wrapped_dek_hash, submission_hash
+       └── INSERT pending_submissions (incl. plaintext_hash, salt,
+                                       ciphertext_hash, wrapped_dek_hash)
+
+Leader vote → verify-keywords → /moderation/batch-submit
+  → wevibe-hub batch handler
+       ├── SELECT pending_submissions.{wrapped_dek_mod, plaintext_hash,
+       │          salt, ciphertext_hash, contributor_sig, ...}
+       ├── populate BatchMemory (incl. D-VR-5 fix:
+       │   BatchMemory.WrappedDekEnc = hex.Decode(wrapped_dek_mod))
+       └── chain.SubmitMemoryToChain → MsgApproveMemory{..., plaintext_hash,
+                                                       salt, ciphertext_hash,
+                                                       contributor_sig}
+
+wevibe-chain MsgApproveMemory keeper
+  ├── compute wrapped_dek_hash = sha256(wrapped_dek_enc)
+  ├── compute submission_hash  = sha256(blob || dek_enc)
+  ├── reconstruct canonical body (4 hash inputs + epoch + pubkey + memory_type + org_id)
+  ├── ed25519.Verify(contributor_pubkey, canonical_body, contributor_sig)
+  ├── assert sha256(blob) == msg.CiphertextHash
+  ├── assert sha256(blob||dek_enc) == msg.ContentHash
+  └── On success: persist StoredMemoryCommitment with plaintext_hash, salt,
+                  ciphertext_hash, wrapped_dek_hash, contributor_sig
+      On failure: reject this memory only; partial-batch-success applies.
+
+External verifier (e.g. moderator with decryption capability)
+  → /wevibe/reputation/v1/verify_upheld_report/{org_id}/{content_hash}
+       returns: plaintext_hash, salt, ciphertext_hash, wrapped_dek_hash,
+                contributor_sig, contributor_pubkey, encrypted_blob,
+                wrapped_dek_enc, content_hash, org_id, epoch, memory_type,
+                canonical_body
+  Holding (plaintext, salt), verify 5 invariants client-side:
+       1. sha256(salt || plaintext)            == plaintext_hash
+       2. sha256(encrypted_blob)                == ciphertext_hash
+       3. sha256(wrapped_dek_enc)               == wrapped_dek_hash
+       4. sha256(blob || dek_enc)               == content_hash
+       5. ed25519.verify(pubkey, body, sig)     holds
+```
+
+### Load-bearing bug fixes shipped with CO-029
+
+- **D-VR-5** (`wevibe-server/wevibe-hub/internal/api/handlers/moderation.go:780`):
+  `BatchMemory.WrappedDekEnc` is now populated from
+  `pending_submissions.wrapped_dek_mod`. Before CO-029 it was nil on every
+  memory, which broke chain-side `wrapped_dek_hash` derivation.
+
+- **D-VR-6** (`wevibe-server/wevibe-hub/internal/orgs/orgs.go`):
+  `BufferSubmission` and `FinalizeRotationBuffer` now call
+  `verify.RequestSignature` over the 9-field canonical body BEFORE inserting
+  into `rotation_buffer` or flushing to `pending_submissions`. Pre-CO-029,
+  rotation-buffer rows were stored without sig verification.
+
+- **D-VR-7** (`wevibe-server/wevibe-dashboard/lib/wevibe-submit.ts`):
+  The dashboard no longer sends `plaintext` to the hub. The submit payload
+  carries `plaintext_hash` + `salt` instead. The `Plaintext` field was also
+  removed from `SubmitMemoryRequest` in `wevibe-hub/internal/protocol/types.go`
+  per R-ONE-PATH.
+
+### Inter-module contracts changed by CO-029
+
+- **wevibe-protocol** test vectors expanded for canonical-body byte equality
+  (covered by `wevibe-server/wevibe-hub/internal/verify/canonical_test.go`).
+- **MCP and Dashboard** outbound payloads added four hash fields and removed
+  the plaintext field.
+- **Hub HTTP intake** added field-presence validation + signature/hash
+  verification per the chain above.
+- **Hub → Chain** added 4 new fields on `MsgApproveMemory` (tags 9–12).
+- **Chain state** added 5 new fields on `StoredMemoryCommitment` (tags 15–19).
+- **Reputation query** `VerifyUpheldReport` response gained 12 new fields
+  including the reconstructed `canonical_body` bytes.
+
+### Sanitization
+
+For CO-029 the hub never sees plaintext, so it no longer runs Unicode
+sanitization at intake. `pending_submissions.sanitization_findings` is null at
+intake. Moderator-decrypt-time sanitization is a Sprint 32 deliverable; the
+existing Findings response shape is preserved but is returned empty.
+
+### Architecture invariants reinforced by CO-029
+
+- R-ONE-PATH: the `Plaintext` field is removed everywhere; there is no
+  dual-handling code path.
+- R-NO-NEW-SERVICES: no new Docker services were added. Container topology
+  remains at the seven services plus the pre-existing `wevibe-social-graph`.
+- R-NO-SP1-RESIDUE: no SP1 / zkVM / Groth16 references in production code.
+
+See `wevibe-meta/workspace/reports/CO-029-implementation-report.txt` for the
+full implementation report and the Stage 6 honest + adversarial test outputs.
