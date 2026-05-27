@@ -50,6 +50,8 @@ workspace/docs/PARALLEL.md
 workspace/templates/CO-TEMPLATE.md
 workspace/templates/MO-TEMPLATE.md
 workspace/templates/SESSION-TEMPLATE.md
+workspace/templates/DMO-TEMPLATE.md
+workspace/templates/GO-TEMPLATE.md
 
 # Runtime artifacts from `make dogfood`
 .logs/
