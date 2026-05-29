@@ -14,7 +14,7 @@ WEVIBE_SERVER_DIR := $(WORKSPACE_ROOT)/wevibe-server
 PROTO_COSMOS_IMAGE  := ghcr.io/cosmos/proto-builder:0.18.1
 PROTO_BUF_IMAGE     := bufbuild/buf:1.34.0
 
-.PHONY: stop-host docker-up docker-down health dogfood dogfood-health dogfood-pipeline clean wevibe-mcp-token
+.PHONY: stop-host docker-up docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline clean wevibe-mcp-token
 .PHONY: proto-gen proto-gen-chain proto-gen-umbral
 
 # ─── Host process cleanup ───────────────────────────────────────────────────
@@ -41,6 +41,12 @@ docker-up:
 	@echo "Stack started. Waiting for services to become healthy..."
 	@cd "$(WEVIBE_SERVER_DIR)" && ./scripts/wait-for-stack-healthy.sh
 
+docker-up-fast:
+	@echo "=== Bringing up WeVibe stack via Docker (fast epoch mode) ==="
+	@cd "$(WEVIBE_SERVER_DIR)" && docker compose -f docker-compose.yml -f docker-compose.fast.yml up -d --build
+	@echo "Fast stack started. Waiting for services to become healthy..."
+	@cd "$(WEVIBE_SERVER_DIR)" && ./scripts/wait-for-stack-healthy.sh
+
 docker-down:
 	@echo "=== Tearing down WeVibe stack and WIPING volumes ==="
 	@cd "$(WEVIBE_SERVER_DIR)" && docker compose down -v
@@ -64,6 +70,17 @@ health:
 dogfood: stop-host docker-down docker-up dogfood-health dogfood-pipeline docker-down
 	@echo ""
 	@echo "=== 🎉 Dogfood complete — all checks passed ==="
+
+dogfood-fast: stop-host docker-down docker-up-fast dogfood-health
+	@echo ""
+	@echo "=== ⚡ Fast dogfood health complete (2s epoch) ==="
+	@echo "Run 'make dogfood-pipeline' to execute the pipeline test, then 'make dogfood-fast-down' to tear down the fast stack."
+
+dogfood-fast-down:
+	@echo "=== Tearing down WeVibe fast stack and WIPING volumes ==="
+	@cd "$(WEVIBE_SERVER_DIR)" && docker compose -f docker-compose.yml -f docker-compose.fast.yml down -v
+	@docker rm -f wevibe-validator 2>/dev/null || true
+	@docker rm -f echo-validator 2>/dev/null || true
 
 dogfood-health:
 	@echo ""
