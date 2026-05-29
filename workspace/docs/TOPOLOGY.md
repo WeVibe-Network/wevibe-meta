@@ -258,6 +258,21 @@ existing Findings response shape is preserved but is returned empty.
 
 - R-ONE-PATH: the `Plaintext` field is removed everywhere; there is no
   dual-handling code path.
+
+---
+
+## Sprint 32 — CO-033b: Serve submission chain live
+
+Cross-module serve flow is now wired end-to-end:
+
+1. `wevibe-opencode-plugin/plugins/wevibe-plugin.ts` reads recall `matched_keywords` and posts them to MCP `/v1/serves`.
+2. `wevibe-mcp/src/http-server.ts` enforces non-empty `matched_keywords` and forwards to hub `POST /v1/orgs/{orgID}/serves`.
+3. Hub persists serve events with `matched_keywords` in `serve_events`.
+4. Hub `GET /v1/orgs/{orgID}/submissions?status=pending_chain` now includes `matched_keywords` by joining `serve_events` (latest serve record by `serve_key=submission_hash`).
+5. Dashboard chain submit (`app/(dashboard)/chain-submit/page.tsx`) builds `MsgSubmitServeBatch` from the real `matched_keywords` field only (no extraction-result proxy path).
+
+Operational verification:
+- `make dogfood` passed Stage 1 service health (5/5) and Stage 2 dogfood pipeline (4/4), including leader batch chain submit and MCP recall.
 - R-NO-NEW-SERVICES: no new Docker services were added. Container topology
   remains at the seven services plus the pre-existing `wevibe-social-graph`.
 - R-NO-SP1-RESIDUE: no SP1 / zkVM / Groth16 references in production code.

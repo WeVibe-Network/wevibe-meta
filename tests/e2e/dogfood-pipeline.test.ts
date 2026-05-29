@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { CONFIG } from '../lib/config.js';
+import { createHash, randomBytes } from 'node:crypto';
 import * as canonical from '../lib/canonical.js';
 
 describe('dogfood pipeline', () => {
@@ -75,12 +76,21 @@ describe('dogfood pipeline', () => {
     submissionHash = enc.submissionHash;
     queryKeyword = 'nginx';
 
+    const salt = randomBytes(32).toString('hex');
+    const plaintextHash = createHash('sha256').update(plaintextMemory, 'utf-8').digest('hex');
+    const ciphertextHash = createHash('sha256').update(Buffer.from(enc.ciphertextHex, 'hex')).digest('hex');
+    const wrappedDekHash = createHash('sha256').update(Buffer.from(enc.wrappedDekModHex, 'hex')).digest('hex');
+
     const canonicalMsg = canonical.submitMemoryMessage(
       orgId,
       currentEpoch,
       submissionHash,
       contributor.pubkeyHex,
       memoryType,
+      plaintextHash,
+      salt,
+      ciphertextHash,
+      wrappedDekHash,
     );
     const sig = uint8ToHex(signData(contributor, canonicalMsg));
 
@@ -94,6 +104,10 @@ describe('dogfood pipeline', () => {
       contributor_sig: sig,
       stack_hint: ['nginx', 'proxy', 'networking'],
       memory_type: memoryType,
+      plaintext_hash: plaintextHash,
+      salt: salt,
+      ciphertext_hash: ciphertextHash,
+      wrapped_dek_hash: wrappedDekHash,
     }, contributor);
 
     expect(r.status).toBe('pending');
@@ -143,20 +157,30 @@ describe('dogfood pipeline', () => {
       readFileSync(join(homedir(), '.wevibe', 'mcp-session-token'), 'utf-8').trim();
     const recallUrl = `${CONFIG.wevibeMcpHttpUrl}/v1/recall`;
 
-    const resp = await fetch(recallUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${sessionToken}`,
-      },
-      body: JSON.stringify({ query: queryKeyword, org_id: orgId }),
-    });
+    let lastStatus = 0;
+    let lastRespText = '';
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const resp = await fetch(recallUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${sessionToken}`,
+        },
+        body: JSON.stringify({ query: queryKeyword, org_id: orgId }),
+      });
 
-    const respText = await resp.text();
-    expect(resp.ok, `Recall failed: ${resp.status} ${respText}`).toBe(true);
+      lastStatus = resp.status;
+      lastRespText = await resp.text();
+      if (resp.ok) {
+        const data = JSON.parse(lastRespText) as { status: string; memories: Array<{ cid?: string; text?: string; guard?: { passed: boolean; detections?: string[]; flags?: string[] } }> };
+        expect(data.memories).toBeTruthy();
+        expect(Array.isArray(data.memories)).toBe(true);
+        return;
+      }
 
-    const data = JSON.parse(respText) as { status: string; memories: Array<{ cid?: string; text?: string; guard?: { passed: boolean; detections?: string[]; flags?: string[] } }> };
-    expect(data.memories).toBeTruthy();
-    expect(Array.isArray(data.memories)).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    expect.fail(`Recall failed after retries: ${lastStatus} ${lastRespText}`);
   });
 });

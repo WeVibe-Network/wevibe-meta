@@ -98,6 +98,8 @@ export class HubClient {
     wrapped_dek_mod: string; submission_hash: string;
     contributor_pubkey: string; contributor_sig: string; stack_hint: string[];
     memory_type: string;
+    plaintext_hash?: string; salt?: string;
+    ciphertext_hash?: string; wrapped_dek_hash?: string;
   }, identity: TestIdentity): Promise<{ submission_hash: string; status: string }> {
     const headers = buildWeVibeSignedHeaders(identity);
     return this.request('POST', `/v1/orgs/${orgId}/submit`, body, headers);
@@ -159,7 +161,34 @@ export class HubClient {
     identity: TestIdentity,
   ): Promise<{ tx_hash?: string; committed_count: number; errors?: string[] }> {
     const headers = buildWeVibeSignedHeaders(identity);
-    return this.request('POST', `/v1/orgs/${orgId}/batch-chain-submit`, { submission_hashes: submissionHashes }, headers);
+    const response = await this.request<{
+      tx_hash?: string;
+      committed_count?: number;
+      errors?: string[];
+      submitted?: number;
+      failed?: number;
+      results?: Array<{ hash?: string; tx_hash?: string; error?: string }>;
+    }>('POST', `/v1/orgs/${orgId}/moderation/batch-submit`, {}, headers);
+
+    if (typeof response.committed_count === 'number') {
+      return {
+        tx_hash: response.tx_hash,
+        committed_count: response.committed_count,
+        errors: response.errors,
+      };
+    }
+
+    const results = response.results ?? [];
+    const errors = results
+      .filter((r) => typeof r.error === 'string' && r.error.length > 0)
+      .map((r) => `${r.hash ?? 'unknown'}: ${r.error as string}`);
+    const firstTxHash = results.find((r) => typeof r.tx_hash === 'string' && r.tx_hash.length > 0)?.tx_hash;
+
+    return {
+      tx_hash: firstTxHash,
+      committed_count: response.submitted ?? 0,
+      errors,
+    };
   }
 
   async queryMemories(orgId: string, body: {

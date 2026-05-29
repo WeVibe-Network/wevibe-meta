@@ -132,16 +132,24 @@ export function submitMemoryMessage(
   submissionHash: string,
   contributorPubkey: string,
   memoryType: string,
+  plaintextHash?: string,
+  salt?: string,
+  ciphertextHash?: string,
+  wrappedDekHash?: string,
 ): Uint8Array {
-  const msg = [
+  const parts = [
     'wevibe.submit_memory.v1',
+    `ciphertext_hash:${ciphertextHash ?? ''}`,
     `contributor_pubkey:${contributorPubkey}`,
     `epoch_id:${epochId}`,
     `memory_type:${memoryType}`,
     `org_id:${orgId}`,
+    `plaintext_hash:${plaintextHash ?? ''}`,
+    `salt:${salt ?? ''}`,
     `submission_hash:${submissionHash}`,
-  ].join('\n');
-  return new TextEncoder().encode(msg);
+    `wrapped_dek_hash:${wrappedDekHash ?? ''}`,
+  ];
+  return new TextEncoder().encode(parts.join('\n'));
 }
 
 export function approveSubmissionMessage(
