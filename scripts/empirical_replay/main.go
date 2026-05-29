@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -98,9 +99,9 @@ type harness struct {
 
 	orgID string
 
-	keywordSet map[string]struct{}
-	memories   []memoryMeta
-	zeroVector []float64
+	keywordSet  map[string]struct{}
+	memories    []memoryMeta
+	queryVector []float64
 
 	// firstServedCID is the first memory CID recorded as served during epoch 1.
 	// Used by sanityCheckServesReachChain to verify the hub→chain batcher is
@@ -128,15 +129,33 @@ func newHarness(seed int64) *harness {
 	orgSeedMix := int64(binary.BigEndian.Uint64(orgDigest[:8]))
 	r := rand.New(rand.NewSource(seed ^ orgSeedMix))
 
+	queryVector := make([]float64, embedDim)
+	var sumSq float64
+	for i := range queryVector {
+		queryVector[i] = r.NormFloat64()
+		sumSq += queryVector[i] * queryVector[i]
+	}
+	norm := math.Sqrt(sumSq)
+	for i := range queryVector {
+		queryVector[i] /= norm
+	}
+	dot := 0.0
+	for _, v := range queryVector {
+		dot += v * v
+	}
+	if math.Abs(dot-1.0) > 0.01 {
+		panic(fmt.Sprintf("queryVector not normalized: dot=%f", dot))
+	}
+
 	h := &harness{
-		hubURL:     hubURL,
-		chainRPC:   chainRPC,
-		seed:       seed,
-		rng:        r,
-		httpClient: &http.Client{Timeout: 20 * time.Second},
-		keywordSet: make(map[string]struct{}),
-		zeroVector: make([]float64, embedDim),
-		maxRuntime: time.Duration(envPositiveIntOrDefault("REPLAY_MAX_DURATION_SECONDS", defaultReplayWatchdogSeconds)) * time.Second,
+		hubURL:      hubURL,
+		chainRPC:    chainRPC,
+		seed:        seed,
+		rng:         r,
+		httpClient:  &http.Client{Timeout: 20 * time.Second},
+		keywordSet:  make(map[string]struct{}),
+		queryVector: queryVector,
+		maxRuntime:  time.Duration(envPositiveIntOrDefault("REPLAY_MAX_DURATION_SECONDS", defaultReplayWatchdogSeconds)) * time.Second,
 		seedCommitTimeout: time.Duration(
 			envPositiveIntOrDefault("REPLAY_SEED_COMMIT_TIMEOUT_SECONDS", defaultSeedCommitTimeoutSecs),
 		) * time.Second,
@@ -684,7 +703,8 @@ func (h *harness) simulateEpoch(chainEpoch int, replayEpoch int) error {
 				continue
 			}
 
-			if err := h.recordServe(r.CID, matchedKeywords, chainEpoch); err != nil {
+			serveNullifier, err := h.recordServe(r.CID, matchedKeywords, chainEpoch)
+			if err != nil {
 				return err
 			}
 
@@ -693,7 +713,7 @@ func (h *harness) simulateEpoch(chainEpoch int, replayEpoch int) error {
 				pDeny = fpDeny
 			}
 			if h.rng.Float64() < pDeny {
-				if err := h.recordDenial(r.CID); err != nil {
+				if err := h.recordDenial(r.CID, serveNullifier, chainEpoch); err != nil {
 					return err
 				}
 			}
@@ -717,7 +737,7 @@ func (h *harness) recall(queryKeywords []string) ([]recallResult, error) {
 		"agent_pubkey":    h.consumer.EdPubHex,
 		"pre_pubkey":      h.consumer.XPubHex,
 		"keyword_weights": weights,
-		"vector":          h.zeroVector,
+		"vector":          h.queryVector,
 		"limit":           servePer,
 		"agent_sig":       "",
 	}
@@ -732,14 +752,15 @@ func (h *harness) recall(queryKeywords []string) ([]recallResult, error) {
 	return resp.Results, nil
 }
 
-func (h *harness) recordServe(memoryHash string, queryKeywords []string, epoch int) error {
+func (h *harness) recordServe(memoryHash string, queryKeywords []string, epoch int) (string, error) {
+	nullifier := h.randHex(32)
 	body := map[string]any{
 		"org_id":              h.orgID,
 		"epoch_id":            epoch,
 		"memory_content_hash": memoryHash,
 		"serve_key":           memoryHash,
 		"contributor_id":      h.contributor.EdPubHex,
-		"nullifier":           h.randHex(32),
+		"nullifier":           nullifier,
 		"model_id":            "co-034-replay",
 		"turn_count":          1,
 		"matched_keywords":    queryKeywords,
@@ -748,18 +769,26 @@ func (h *harness) recordServe(memoryHash string, queryKeywords []string, epoch i
 	url := fmt.Sprintf("%s/v1/orgs/%s/serves", h.hubURL, h.orgID)
 	var resp map[string]any
 	if err := h.doJSON(http.MethodPost, url, body, h.signedHeader(h.consumer), &resp); err != nil {
-		return fmt.Errorf("record serve failed for %s: %w", memoryHash, err)
+		return "", fmt.Errorf("record serve failed for %s: %w", memoryHash, err)
 	}
 	if h.firstServedCID == "" {
 		h.firstServedCID = memoryHash
 	}
-	return nil
+	return nullifier, nil
 }
 
-func (h *harness) recordDenial(memoryHash string) error {
+// recordDenial denies a previously served memory. The denial MUST reference the
+// originating serve's nullifier: the chain's x/serve SubmitDenialBatch looks up
+// the serve attestation by nullifier (GetServeAttestationByNullifier) to resolve
+// the memory + matched keywords, and rejects the denial if no matching serve
+// attestation exists. The epoch must also be the live chain epoch so that
+// ApplyDenialDecay runs outside the grace window.
+func (h *harness) recordDenial(memoryHash, serveNullifier string, epoch int) error {
 	body := map[string]any{
+		"org_id":      h.orgID,
+		"epoch_id":    epoch,
 		"memory_hash": memoryHash,
-		"nullifier":   h.randHex(32),
+		"nullifier":   serveNullifier,
 		"reason":      "co-034-empirical-denial",
 	}
 
