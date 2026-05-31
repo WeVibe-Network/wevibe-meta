@@ -15,11 +15,8 @@ import (
 
 var fixtureKeywordFormatRegex = regexp.MustCompile(`^[a-z][a-z0-9_]{1,39}$`)
 
-func (h *harness) approveMemoryAsModerator(submissionHash string, epochID int, isGood bool) error {
-	memoryType := "correct_implementation"
-	if !isGood {
-		memoryType = "negative_signal"
-	}
+func (h *harness) approveMemoryAsModerator(submissionHash string, epochID int, _ bool) error {
+	memoryType := "memory"
 
 	approveCanonical := approveSubmissionCanonical(h.orgID, submissionHash, epochID, memoryType, h.moderator.EdPubHex)
 	moderatorSig := hex.EncodeToString(ed25519.Sign(h.moderator.EdPriv, approveCanonical))
@@ -182,6 +179,86 @@ func (h *harness) waitForLifecycleState(submissionHashes []string, targetState s
 	}
 
 	return fmt.Errorf("timeout waiting for lifecycle state %q: statuses=%v", targetState, stateCounts)
+}
+
+// influxContributorMemories injects h.contRate new contributor memories at the
+// current org epoch and drives them through the SAME full lifecycle the seed
+// batch uses (submit → pending → approve → pending_keyword → keyword extraction
+// → pending_chain → batch chain-commit → committed). The committed memories are
+// appended to h.memories tagged Contributor=true so they enter the active
+// retrieval set and compete for serves like the sim's per-epoch contRate
+// inflow, while being excluded from initial-cohort survival measurement.
+//
+// This blocks until the new memories are committed on-chain (R-ONE-PATH: a
+// memory cannot be served or measured before it is committed). It is a no-op
+// when contRate <= 0 (steady/bootstrap when run with influx disabled).
+// replayEpoch is used only for watchdog/log context.
+func (h *harness) influxContributorMemories(replayEpoch int) error {
+	count := h.contRate
+	if count <= 0 {
+		return nil
+	}
+
+	if err := h.ensureWithinWatchdog(fmt.Sprintf("influx epoch %d lookup", replayEpoch+1)); err != nil {
+		return err
+	}
+	epochID, err := h.getOrgCurrentEpoch()
+	if err != nil {
+		return fmt.Errorf("resolve influx epoch: %w", err)
+	}
+
+	batch := make([]memoryMeta, 0, count)
+	for c := 0; c < count; c++ {
+		if err := h.ensureWithinWatchdog(fmt.Sprintf("influx epoch %d memory %d/%d", replayEpoch+1, c+1, count)); err != nil {
+			return err
+		}
+		idx := h.contribCounter
+		h.contribCounter++
+
+		fixture, err := h.generateFixtureMemory(epochID, idx)
+		if err != nil {
+			return fmt.Errorf("generate influx fixture %d: %w", idx, err)
+		}
+		meta, err := h.seedOneMemory(idx, epochID, fixture)
+		if err != nil {
+			return fmt.Errorf("submit influx memory %d: %w", idx, err)
+		}
+		meta.Contributor = true
+		batch = append(batch, meta)
+	}
+
+	hashes := make([]string, 0, len(batch))
+	for _, mem := range batch {
+		hashes = append(hashes, mem.Hash)
+	}
+
+	if err := h.waitForLifecycleState(hashes, "pending", h.lifecycleTimeout); err != nil {
+		return err
+	}
+	for _, mem := range batch {
+		if err := h.approveMemoryAsModerator(mem.Hash, epochID, mem.IsGood); err != nil {
+			return err
+		}
+	}
+	if err := h.waitForLifecycleState(hashes, "pending_keyword", h.lifecycleTimeout); err != nil {
+		return err
+	}
+	if err := h.runBatchKeywordExtraction(batch); err != nil {
+		return err
+	}
+	if err := h.waitForLifecycleState(hashes, "pending_chain", h.lifecycleTimeout); err != nil {
+		return err
+	}
+	if err := h.submitChainBatch(); err != nil {
+		return err
+	}
+	if err := h.waitForLifecycleState(hashes, "committed", h.seedCommitTimeout); err != nil {
+		return err
+	}
+
+	h.memories = append(h.memories, batch...)
+	fmt.Printf("[influx] epoch %d: committed %d contributor memories (pool now %d)\n", replayEpoch+1, len(batch), len(h.memories))
+	return nil
 }
 
 func (h *harness) bootstrapLeaderWalletForHarness() error {

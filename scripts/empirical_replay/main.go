@@ -10,13 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"math/rand"
 	"net/http"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -24,7 +24,6 @@ const (
 	initMem   = 100
 	simEpochs = 60
 	epochMult = 5
-	qPerEpoch = 15
 	qSize     = 3
 	servePer  = 3
 	badRate   = 0.12
@@ -34,6 +33,8 @@ const (
 	embedDim  = 768
 
 	defaultReplayWatchdogSeconds   = 1800
+	defaultHTTPTimeoutSecs         = 20
+	defaultReplayLockPath          = "/tmp/co-042-replay.lock"
 	defaultSeedCommitTimeoutSecs   = 300
 	defaultEpochAdvanceTimeoutSecs = 20
 	defaultLifecycleTimeoutSecs    = 300
@@ -66,7 +67,17 @@ type memoryMeta struct {
 	IsGood         bool
 	Keywords       []string
 	KeywordWeights []float64
+	CreatedEpoch   uint64
 	Archived       bool
+
+	// Contributor is true for memories injected mid-run by the per-epoch
+	// contributor influx (REPLAY_CONT_RATE). They enter the active retrieval
+	// set (so they compete for serves like the sim's contRate memories) but
+	// are EXCLUDED from survival measurement, which scores only the initial
+	// seed cohort — matching sim-trajectory.js, whose survival is measured over
+	// m.ce===0 (the initMem cohort) even though the sim also grows the pool by
+	// contRate each epoch.
+	Contributor bool
 }
 
 type fixtureMemory struct {
@@ -76,6 +87,15 @@ type fixtureMemory struct {
 	keywords       []string
 	keywordWeights []float64
 	createdEpoch   uint64
+}
+
+// simTrajPoint is one row of the sim's expected per-epoch survival curve,
+// loaded from REPLAY_SIM_TRAJECTORY for in-run divergence checkpoints.
+type simTrajPoint struct {
+	Epoch int     `json:"epoch"`
+	Good  float64 `json:"good"`
+	Bad   float64 `json:"bad"`
+	Gap   float64 `json:"gap"`
 }
 
 type harness struct {
@@ -99,9 +119,46 @@ type harness struct {
 
 	orgID string
 
-	keywordSet  map[string]struct{}
-	memories    []memoryMeta
-	queryVector []float64
+	seedEpochID  uint64
+	seedEpochSet bool
+
+	keywordSet map[string]struct{}
+	memories   []memoryMeta
+
+	// ollamaURL is the host Ollama endpoint. Query vectors are computed by
+	// embedding the query's keywords through the SAME model the hub uses to
+	// embed each memory's keywords at commit (nomic-embed-text, see
+	// wevibe-hub/internal/embed). This puts query and memory vectors in one
+	// space so Qdrant's vector pre-filter (vectorRecallDepth=30) surfaces the
+	// memories that actually share keywords with the query — reproducing the
+	// sim's "rank all active by keyword overlap" coverage instead of always
+	// returning the same 30 nearest to a single frozen vector.
+	ollamaURL     string
+	embedModel    string
+	queryVecCache map[string][]float64
+
+	// simTraj is the sim's expected per-epoch good/bad/gap curve (loaded from
+	// REPLAY_SIM_TRAJECTORY). checkpointEvery>0 enables in-run checkpoints that
+	// poll the chain and compare observed survival to the expected curve so
+	// divergence is caught early. simShift accounts for the chain's extra
+	// IdleDecaySettleEpochs lag vs the sim (chain epoch e ≈ sim epoch e-shift).
+	simTraj         []simTrajPoint
+	checkpointEvery int
+	simShift        int
+
+	// qPerEpoch is queries per epoch (REPLAY_QPE). Drives traffic regime:
+	// bootstrap (low, e.g. 4), steady (15, default), heavy (e.g. 45).
+	qPerEpoch int
+
+	// contRate is the number of contributor memories injected per epoch
+	// (REPLAY_CONT_RATE, default 0 = off). It mirrors the sim's SC.contRate:
+	// steady/bootstrap use 2 (the sim base), heavy uses 6. Each injected memory
+	// is driven through the full submit→approve→keyword→chain-commit lifecycle
+	// before that epoch's queries run, so it can be served on-chain like a real
+	// contribution. contribCounter supplies monotonic fixture indices so influx
+	// memories never collide with the initial seed indices.
+	contRate       int
+	contribCounter int
 
 	// firstServedCID is the first memory CID recorded as served during epoch 1.
 	// Used by sanityCheckServesReachChain to verify the hub→chain batcher is
@@ -111,6 +168,13 @@ type harness struct {
 }
 
 func main() {
+	releaseLock, err := acquireReplaySingleFlightLock()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "empirical replay failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer releaseLock()
+
 	seed := int64(envIntOrDefault("REPLAY_SEED", 42))
 
 	h := newHarness(seed)
@@ -118,6 +182,99 @@ func main() {
 		fmt.Fprintf(os.Stderr, "empirical replay failed: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func acquireReplaySingleFlightLock() (func(), error) {
+	lockPath := strings.TrimSpace(getenv("REPLAY_LOCK_PATH", defaultReplayLockPath))
+	if lockPath == "" {
+		return nil, fmt.Errorf("REPLAY_LOCK_PATH cannot be empty")
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			if _, writeErr := fmt.Fprintf(f, "%d\n%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339)); writeErr != nil {
+				_ = f.Close()
+				_ = os.Remove(lockPath)
+				return nil, fmt.Errorf("write replay lock %s: %w", lockPath, writeErr)
+			}
+			if closeErr := f.Close(); closeErr != nil {
+				_ = os.Remove(lockPath)
+				return nil, fmt.Errorf("close replay lock %s: %w", lockPath, closeErr)
+			}
+
+			return func() {
+				_ = os.Remove(lockPath)
+			}, nil
+		}
+
+		if !errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("acquire replay lock %s: %w", lockPath, err)
+		}
+
+		runningPID, isRunning, probeErr := replayLockOwnedByRunningProcess(lockPath)
+		if probeErr != nil {
+			return nil, probeErr
+		}
+		if isRunning {
+			return nil, fmt.Errorf(
+				"another replay run is active (pid=%d, lock=%s); stop it before starting a new run",
+				runningPID,
+				lockPath,
+			)
+		}
+
+		if removeErr := os.Remove(lockPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("remove stale replay lock %s: %w", lockPath, removeErr)
+		}
+	}
+
+	return nil, fmt.Errorf("unable to acquire replay lock %s", lockPath)
+}
+
+func replayLockOwnedByRunningProcess(lockPath string) (int, bool, error) {
+	data, err := os.ReadFile(lockPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("read replay lock %s: %w", lockPath, err)
+	}
+
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0, false, nil
+	}
+
+	pid, err := strconv.Atoi(fields[0])
+	if err != nil || pid <= 0 {
+		return 0, false, nil
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return pid, false, nil
+	}
+
+	err = proc.Signal(syscall.Signal(0))
+	if err == nil {
+		return pid, true, nil
+	}
+	if errors.Is(err, os.ErrProcessDone) {
+		return pid, false, nil
+	}
+
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case syscall.ESRCH:
+			return pid, false, nil
+		case syscall.EPERM:
+			return pid, true, nil
+		}
+	}
+
+	return pid, false, nil
 }
 
 func newHarness(seed int64) *harness {
@@ -129,33 +286,24 @@ func newHarness(seed int64) *harness {
 	orgSeedMix := int64(binary.BigEndian.Uint64(orgDigest[:8]))
 	r := rand.New(rand.NewSource(seed ^ orgSeedMix))
 
-	queryVector := make([]float64, embedDim)
-	var sumSq float64
-	for i := range queryVector {
-		queryVector[i] = r.NormFloat64()
-		sumSq += queryVector[i] * queryVector[i]
-	}
-	norm := math.Sqrt(sumSq)
-	for i := range queryVector {
-		queryVector[i] /= norm
-	}
-	dot := 0.0
-	for _, v := range queryVector {
-		dot += v * v
-	}
-	if math.Abs(dot-1.0) > 0.01 {
-		panic(fmt.Sprintf("queryVector not normalized: dot=%f", dot))
-	}
-
 	h := &harness{
-		hubURL:      hubURL,
-		chainRPC:    chainRPC,
-		seed:        seed,
-		rng:         r,
-		httpClient:  &http.Client{Timeout: 20 * time.Second},
-		keywordSet:  make(map[string]struct{}),
-		queryVector: queryVector,
-		maxRuntime:  time.Duration(envPositiveIntOrDefault("REPLAY_MAX_DURATION_SECONDS", defaultReplayWatchdogSeconds)) * time.Second,
+		hubURL:   hubURL,
+		chainRPC: chainRPC,
+		seed:     seed,
+		rng:      r,
+		httpClient: &http.Client{Timeout: time.Duration(
+			envPositiveIntOrDefault("REPLAY_HTTP_TIMEOUT_SECONDS", defaultHTTPTimeoutSecs),
+		) * time.Second},
+		keywordSet:      make(map[string]struct{}),
+		ollamaURL:       strings.TrimRight(getenv("OLLAMA_URL", "http://localhost:11434"), "/"),
+		embedModel:      getenv("REPLAY_EMBED_MODEL", "nomic-embed-text"),
+		queryVecCache:   make(map[string][]float64),
+		checkpointEvery: envIntOrDefault("REPLAY_CHECKPOINT_EPOCHS", 15),
+		simShift:        envIntOrDefault("REPLAY_SIM_SHIFT", 5),
+		qPerEpoch:       envPositiveIntOrDefault("REPLAY_QPE", 15),
+		contRate:        envIntOrDefault("REPLAY_CONT_RATE", 0),
+		contribCounter:  initMem,
+		maxRuntime:      time.Duration(envPositiveIntOrDefault("REPLAY_MAX_DURATION_SECONDS", defaultReplayWatchdogSeconds)) * time.Second,
 		seedCommitTimeout: time.Duration(
 			envPositiveIntOrDefault("REPLAY_SEED_COMMIT_TIMEOUT_SECONDS", defaultSeedCommitTimeoutSecs),
 		) * time.Second,
@@ -227,6 +375,8 @@ func (h *harness) run() error {
 	badCount := len(h.memories) - goodCount
 	fmt.Printf("[seed] created %d memories (%d good, %d bad)\n", len(h.memories), goodCount, badCount)
 
+	h.loadSimTrajectory()
+
 	totalEpochs := envPositiveIntOrDefault("REPLAY_TOTAL_EPOCHS", simEpochs*epochMult)
 	for e := 0; e < totalEpochs; e++ {
 		if err := h.ensureWithinWatchdog(fmt.Sprintf("epoch loop %d/%d", e+1, totalEpochs)); err != nil {
@@ -239,14 +389,42 @@ func (h *harness) run() error {
 			return fmt.Errorf("resolve chain epoch before epoch %d: %w", e+1, err)
 		}
 
+		// Contributor influx mirrors the sim's per-epoch contRate inflow: add
+		// new memories to the active pool BEFORE this epoch's queries run (the
+		// sim pushes contRate memories at epoch start, then runs queries). They
+		// must fully commit on-chain before they can be served (R-ONE-PATH), so
+		// the helper blocks through the lifecycle. drain-pacing below then keeps
+		// the (heavier) traffic inside the settle window.
+		if err := h.influxContributorMemories(e); err != nil {
+			return fmt.Errorf("contributor influx before epoch %d: %w", e+1, err)
+		}
+
 		if err := h.simulateEpoch(currentEpoch, e); err != nil {
 			return err
 		}
+
+		// Drain the hub→chain serve/denial relay before advancing. The chain
+		// assesses epoch N's traffic at chain epoch N+IdleDecaySettleEpochs; if
+		// the async relay falls behind the (fast) epoch clock, that traffic has
+		// not landed when it is assessed, the org reads zero traffic, the
+		// zero-signal guard suppresses idle decay, and nothing decays. Waiting
+		// for this epoch's events to commit bounds relay lag to ~one epoch so
+		// the settle window holds and per-epoch decay sees real traffic.
+		if err := h.drainServeRelay(currentEpoch); err != nil {
+			return err
+		}
+
 		if err := h.waitEpochAdvance(currentEpoch+1, h.epochAdvanceTimeout); err != nil {
 			return err
 		}
 
 		fmt.Printf("[epoch %d/%d] traffic+advance took %v\n", e+1, totalEpochs, time.Since(epochStart))
+
+		if h.checkpointEvery > 0 && (e+1)%h.checkpointEvery == 0 && (e+1) < totalEpochs {
+			if err := h.runCheckpoint(e + 1); err != nil {
+				return err
+			}
+		}
 
 		if e == 0 {
 			if err := h.sanityCheckServesReachChain(); err != nil {
@@ -341,10 +519,21 @@ func (h *harness) createOrg() error {
 		"signature":            hex.EncodeToString(sig),
 	}
 
-	var resp map[string]any
+	var resp struct {
+		TxHash string `json:"tx_hash"`
+	}
 	if err := h.doJSON(http.MethodPost, h.hubURL+"/v1/orgs", body, nil, &resp); err != nil {
 		return fmt.Errorf("create org failed: %w", err)
 	}
+
+	if strings.TrimSpace(resp.TxHash) == "" {
+		return fmt.Errorf("create org response missing tx_hash")
+	}
+
+	if err := h.waitForTxCommit(resp.TxHash, h.seedCommitTimeout); err != nil {
+		return fmt.Errorf("wait for org registration tx commit: %w", err)
+	}
+
 	return nil
 }
 
@@ -388,6 +577,8 @@ func (h *harness) seedMemories() error {
 	if err != nil {
 		return fmt.Errorf("resolve seed epoch: %w", err)
 	}
+	h.seedEpochID = uint64(seedEpoch)
+	h.seedEpochSet = true
 
 	if err := h.bootstrapFixtureVocabulary(); err != nil {
 		return fmt.Errorf("bootstrap fixture vocabulary: %w", err)
@@ -453,10 +644,7 @@ func (h *harness) seedOneMemory(i int, epochID int, fixture fixtureMemory) (memo
 		return memoryMeta{}, fmt.Errorf("invalid keyword fixture for memory %d: %w", i, err)
 	}
 
-	mType := "correct_implementation"
-	if !fixture.isGood {
-		mType = "negative_signal"
-	}
+	mType := "memory"
 
 	plaintext := fixture.plaintext
 	saltHex := h.randHex(32)
@@ -510,6 +698,7 @@ func (h *harness) seedOneMemory(i int, epochID int, fixture fixtureMemory) (memo
 		IsGood:         fixture.isGood,
 		Keywords:       append([]string(nil), fixture.keywords...),
 		KeywordWeights: append([]float64(nil), fixture.keywordWeights...),
+		CreatedEpoch:   fixture.createdEpoch,
 	}, nil
 }
 
@@ -661,7 +850,7 @@ func (h *harness) ensureKeyword(keyword string) error {
 }
 
 func (h *harness) simulateEpoch(chainEpoch int, replayEpoch int) error {
-	for q := 0; q < qPerEpoch; q++ {
+	for q := 0; q < h.qPerEpoch; q++ {
 		if err := h.ensureWithinWatchdog(fmt.Sprintf("simulate epoch %d query %d", replayEpoch+1, q+1)); err != nil {
 			return err
 		}
@@ -732,12 +921,17 @@ func (h *harness) recall(queryKeywords []string) ([]recallResult, error) {
 		weights = append(weights, map[string]any{"keyword": kw, "weight": 1.0 / float64(len(queryKeywords))})
 	}
 
+	queryVector, err := h.embedKeywords(queryKeywords)
+	if err != nil {
+		return nil, fmt.Errorf("embed query keywords %v: %w", queryKeywords, err)
+	}
+
 	body := map[string]any{
 		"org_id":          h.orgID,
 		"agent_pubkey":    h.consumer.EdPubHex,
 		"pre_pubkey":      h.consumer.XPubHex,
 		"keyword_weights": weights,
-		"vector":          h.queryVector,
+		"vector":          queryVector,
 		"limit":           servePer,
 		"agent_sig":       "",
 	}
@@ -750,6 +944,35 @@ func (h *harness) recall(queryKeywords []string) ([]recallResult, error) {
 		return nil, err
 	}
 	return resp.Results, nil
+}
+
+// embedKeywords returns the nomic-embed-text embedding of the query's keywords,
+// matching how the hub embeds each memory's keywords at commit
+// (wevibe-hub/internal/chain/watcher.go computeEmbedding → embed.GetEmbedding).
+// Query and memory vectors therefore live in the same space, so different
+// keyword queries surface the memories that share those keywords rather than a
+// single fixed set. Results are cached per sorted keyword-set to avoid
+// redundant Ollama round-trips.
+func (h *harness) embedKeywords(keywords []string) ([]float64, error) {
+	key := strings.Join(append([]string(nil), keywords...), "\x00")
+	if cached, ok := h.queryVecCache[key]; ok {
+		return cached, nil
+	}
+
+	text := strings.Join(keywords, " ")
+	reqBody := map[string]any{"model": h.embedModel, "prompt": text}
+	var resp struct {
+		Embedding []float64 `json:"embedding"`
+	}
+	if err := h.doJSON(http.MethodPost, h.ollamaURL+"/api/embeddings", reqBody, nil, &resp); err != nil {
+		return nil, fmt.Errorf("ollama embeddings request: %w", err)
+	}
+	if len(resp.Embedding) != embedDim {
+		return nil, fmt.Errorf("embedding dim mismatch: got %d want %d (is model %q pulled?)", len(resp.Embedding), embedDim, h.embedModel)
+	}
+
+	h.queryVecCache[key] = resp.Embedding
+	return resp.Embedding, nil
 }
 
 func (h *harness) recordServe(memoryHash string, queryKeywords []string, epoch int) (string, error) {
@@ -818,13 +1041,145 @@ func (h *harness) queryArchivalState() (map[string]string, error) {
 	return out, nil
 }
 
+func (h *harness) loadSimTrajectory() {
+	path := strings.TrimSpace(getenv("REPLAY_SIM_TRAJECTORY", "/tmp/sim-trajectory.json"))
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Printf("[monitor] no sim trajectory at %s (%v); checkpoints will report observed only\n", path, err)
+		return
+	}
+	var doc struct {
+		Scenario   string         `json:"scenario"`
+		Trajectory []simTrajPoint `json:"trajectory"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		fmt.Printf("[monitor] failed to parse sim trajectory %s: %v\n", path, err)
+		return
+	}
+	h.simTraj = doc.Trajectory
+	fmt.Printf("[monitor] loaded sim trajectory %q (%d epochs); checkpoints every %d epochs, sim shift %d\n",
+		doc.Scenario, len(h.simTraj), h.checkpointEvery, h.simShift)
+}
+
+// expectedAt returns the sim's expected good/bad/gap for a given replay epoch,
+// shifted by simShift to account for the chain's extra settle-lag before decay
+// onset (chain epoch e ≈ sim epoch e-shift). ok=false if out of range.
+func (h *harness) expectedAt(replayEpoch int) (simTrajPoint, bool) {
+	if len(h.simTraj) == 0 {
+		return simTrajPoint{}, false
+	}
+	idx := replayEpoch - h.simShift - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(h.simTraj) {
+		idx = len(h.simTraj) - 1
+	}
+	return h.simTraj[idx], true
+}
+
+// runCheckpoint polls the chain for current good/bad survival and prints it
+// alongside the sim's expected value, with a divergence verdict. This surfaces
+// "is decay tracking the model" within ~40 epochs instead of after a full run.
+func (h *harness) runCheckpoint(replayEpoch int) error {
+	good, bad, err := h.measureSurvivalQuick()
+	if err != nil {
+		return fmt.Errorf("checkpoint epoch %d: %w", replayEpoch, err)
+	}
+	gap := good - bad
+
+	exp, ok := h.expectedAt(replayEpoch)
+	if !ok {
+		fmt.Printf("[monitor] epoch %3d | OBSERVED good=%.3f bad=%.3f gap=%.1fpp (no sim reference)\n",
+			replayEpoch, good, bad, gap*100)
+		return nil
+	}
+
+	const tol = 0.15
+	goodOff := good - exp.Good
+	badOff := bad - exp.Bad
+	verdict := "ON-TRACK"
+	if goodOff < -tol {
+		verdict = "DIVERGENT: good-survival BELOW sim (good archiving too fast)"
+	} else if badOff > tol {
+		verdict = "DIVERGENT: bad-persistence ABOVE sim (bad not decaying)"
+	}
+
+	fmt.Printf("[monitor] epoch %3d | obs good=%.3f bad=%.3f gap=%5.1fpp | sim(e-%d) good=%.3f bad=%.3f gap=%5.1fpp | dGood=%+.3f dBad=%+.3f | %s\n",
+		replayEpoch, good, bad, gap*100, h.simShift, exp.Good, exp.Bad, exp.Gap*100, goodOff, badOff, verdict)
+	return nil
+}
+
+// measureSurvivalQuick returns good/bad survival from chain archival state only
+// (no serve-count breakdown), for cheap in-run checkpoints.
+func (h *harness) measureSurvivalQuick() (float64, float64, error) {
+	if !h.seedEpochSet {
+		return 0, 0, fmt.Errorf("seed cohort epoch not initialized")
+	}
+
+	goodTotal, goodPresent, badTotal, badPresent := 0, 0, 0, 0
+	for i := range h.memories {
+		if !h.isInitialCohortMemory(h.memories[i]) {
+			continue
+		}
+		if err := h.ensureWithinWatchdog(fmt.Sprintf("checkpoint survival %d/%d", i+1, len(h.memories))); err != nil {
+			return 0, 0, err
+		}
+		archived, err := h.queryArchivedFromChain(h.memories[i].Hash)
+		if err != nil {
+			return 0, 0, err
+		}
+		if h.memories[i].IsGood {
+			goodTotal++
+			if !archived {
+				goodPresent++
+			}
+		} else {
+			badTotal++
+			if !archived {
+				badPresent++
+			}
+		}
+	}
+	var good, bad float64
+	if goodTotal > 0 {
+		good = float64(goodPresent) / float64(goodTotal)
+	}
+	if badTotal > 0 {
+		bad = float64(badPresent) / float64(badTotal)
+	}
+	return good, bad, nil
+}
+
 func (h *harness) measureSurvival() (float64, float64, error) {
+	if !h.seedEpochSet {
+		return 0, 0, fmt.Errorf("seed cohort epoch not initialized")
+	}
+
 	goodTotal := 0
 	goodPresent := 0
 	badTotal := 0
 	badPresent := 0
 
+	// good/bad × served(on-chain serve_count_total>0)/unserved × survived/archived.
+	// This isolates whether good memories archive because they decay despite
+	// being served (decay-param problem) or because they are never served on
+	// chain (retrieval-coverage problem).
+	var (
+		goodServed, goodServedAlive, goodUnserved, goodUnservedAlive int
+		badServed, badServedAlive, badUnserved, badUnservedAlive     int
+	)
+
 	for i := range h.memories {
+		if !h.isInitialCohortMemory(h.memories[i]) {
+			// Survival is scored over the initial seed cohort only (see
+			// memoryMeta.CreatedEpoch + memoryMeta.Contributor): influx memories
+			// compete for serves but are not part of the gate measurement.
+			continue
+		}
 		if err := h.ensureWithinWatchdog(fmt.Sprintf("survival measurement %d/%d", i+1, len(h.memories))); err != nil {
 			return 0, 0, err
 		}
@@ -836,16 +1191,46 @@ func (h *harness) measureSurvival() (float64, float64, error) {
 		h.memories[i].Archived = archived
 		present := !archived
 
+		serveCount, scErr := h.getServeCountTotalFromChain(h.memories[i].Hash)
+		if scErr != nil {
+			serveCount = 0
+		}
+		served := serveCount > 0
+
 		m := h.memories[i]
 		if m.IsGood {
 			goodTotal++
 			if present {
 				goodPresent++
 			}
+			switch {
+			case served && present:
+				goodServed++
+				goodServedAlive++
+			case served && !present:
+				goodServed++
+			case !served && present:
+				goodUnserved++
+				goodUnservedAlive++
+			default:
+				goodUnserved++
+			}
 		} else {
 			badTotal++
 			if present {
 				badPresent++
+			}
+			switch {
+			case served && present:
+				badServed++
+				badServedAlive++
+			case served && !present:
+				badServed++
+			case !served && present:
+				badUnserved++
+				badUnservedAlive++
+			default:
+				badUnserved++
 			}
 		}
 	}
@@ -858,6 +1243,13 @@ func (h *harness) measureSurvival() (float64, float64, error) {
 		badPersist = float64(badPresent) / float64(badTotal)
 	}
 	return goodSurv, badPersist, nil
+}
+
+func (h *harness) isInitialCohortMemory(mem memoryMeta) bool {
+	if mem.Contributor {
+		return false
+	}
+	return mem.CreatedEpoch == h.seedEpochID
 }
 
 func (h *harness) waitEpochAdvance(targetEpoch int, timeout time.Duration) error {
@@ -874,6 +1266,34 @@ func (h *harness) waitEpochAdvance(targetEpoch int, timeout time.Duration) error
 		time.Sleep(400 * time.Millisecond)
 	}
 	return fmt.Errorf("timeout waiting for chain epoch >= %d", targetEpoch)
+}
+
+// drainServeRelay blocks until the hub has flushed all pending serve/denial
+// events for the org to the chain (pending_total == 0). This is the pacing
+// mechanism that keeps the async relay from falling behind the fast epoch
+// clock: without it, epoch N's traffic lands many epochs late, past the
+// settle window, the org reads zero traffic at assessment, the zero-signal
+// guard fires, and decay never runs. assessedEpoch is informational (for the
+// watchdog message only). Bounded by the lifecycle timeout.
+func (h *harness) drainServeRelay(assessedEpoch int) error {
+	deadline := time.Now().Add(h.lifecycleTimeout)
+	url := fmt.Sprintf("%s/v1/test/orgs/%s/serve-queue", h.hubURL, h.orgID)
+	for time.Now().Before(deadline) {
+		if err := h.ensureWithinWatchdog(fmt.Sprintf("drain serve relay (epoch %d)", assessedEpoch)); err != nil {
+			return err
+		}
+		var resp struct {
+			PendingTotal int `json:"pending_total"`
+		}
+		if err := h.doJSON(http.MethodGet, url, nil, nil, &resp); err != nil {
+			return fmt.Errorf("query serve-queue depth: %w", err)
+		}
+		if resp.PendingTotal == 0 {
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("timeout draining serve relay for epoch %d", assessedEpoch)
 }
 
 func (h *harness) getChainCurrentEpoch() (int, error) {
@@ -920,6 +1340,72 @@ func (h *harness) getChainCurrentEpoch() (int, error) {
 	}
 
 	return currentEpoch, nil
+}
+
+func (h *harness) waitForTxCommit(txHash string, timeout time.Duration) error {
+	normalizedHash := strings.ToUpper(strings.TrimPrefix(strings.TrimSpace(txHash), "0x"))
+	if normalizedHash == "" {
+		return fmt.Errorf("tx hash is empty")
+	}
+
+	deadline := time.Now().Add(timeout)
+	const pollInterval = 250 * time.Millisecond
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		if err := h.ensureWithinWatchdog("wait tx commit"); err != nil {
+			return err
+		}
+
+		url := fmt.Sprintf("%s/tx?hash=0x%s", h.chainRPC, normalizedHash)
+		var resp struct {
+			Result struct {
+				TxResult struct {
+					Code      int    `json:"code"`
+					Log       string `json:"log"`
+					Codespace string `json:"codespace"`
+				} `json:"tx_result"`
+			} `json:"result"`
+			Error *struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+				Data    string `json:"data"`
+			} `json:"error"`
+		}
+
+		if err := h.doJSON(http.MethodGet, url, nil, nil, &resp); err != nil {
+			lastErr = err
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		if resp.Error != nil {
+			errText := strings.ToLower(resp.Error.Message + " " + resp.Error.Data)
+			if strings.Contains(errText, "not found") {
+				time.Sleep(pollInterval)
+				continue
+			}
+			return fmt.Errorf("tx query rpc error: code=%d message=%s data=%s", resp.Error.Code, resp.Error.Message, resp.Error.Data)
+		}
+
+		if resp.Result.TxResult.Code != 0 {
+			return fmt.Errorf(
+				"tx %s failed: codespace=%s code=%d log=%s",
+				normalizedHash,
+				resp.Result.TxResult.Codespace,
+				resp.Result.TxResult.Code,
+				resp.Result.TxResult.Log,
+			)
+		}
+
+		return nil
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("timeout waiting for tx %s commit: %w", normalizedHash, lastErr)
+	}
+
+	return fmt.Errorf("timeout waiting for tx %s commit", normalizedHash)
 }
 
 func (h *harness) getOrgCurrentEpoch() (int, error) {
