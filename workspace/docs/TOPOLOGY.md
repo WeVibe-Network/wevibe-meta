@@ -294,6 +294,17 @@ Cross-module contract: the hub submits memory batches with a single `MEMORY_TYPE
 
 Operational verification:
 - `wevibe-chain` and `wevibe-server/wevibe-hub` full Go suites pass; `wevibe-mcp` + `wevibe-dashboard` `tsc --noEmit` clean; R-NO-ORPHAN grep zero across chain + server.
-- `make dogfood` brought up all nine services healthy (including `wevibe-faucet`); FAUCET_URL reachable from the hub with a funded chain address. The Stage-2 pipeline test is blocked at org creation by pre-existing `wevibe-meta` dogfood-harness drift (CO-047 `leader_wallet` contract), which is outside CO-049 scope; the end-to-end batch tx_hash proof is scheduled as the next order.
+- `make dogfood` brought up all nine services healthy (including `wevibe-faucet`); FAUCET_URL reachable from the hub with a funded chain address. The Stage-2 pipeline end-to-end proof was completed in CO-050 (see below).
 
 See `wevibe-meta/workspace/reports/CO-049-implementation-report.txt` for the full implementation report.
+
+## Sprint 32 — CO-050: Dogfood harness reconciliation + end-to-end pipeline proof
+
+CO-050 reconciled the `wevibe-meta/tests` dogfood harness to two current hub contracts and then ran the full pipeline to produce CO-049's deferred end-to-end proof.
+
+1. **`leader_wallet` in createOrg (harness contract)**: `HubClient.createOrg` (`tests/lib/hub-client.ts`) now sends a `leader_wallet` field in the **request body** (the second argument to `buildBodySignedPayload`), sourced from the module-level constant `DOGFOOD_LEADER_WALLET` (a valid bech32 `wevibe` address). The hub has required `leader_wallet` since CO-047. It is an **unsigned** field — it is NOT part of `canonical.createOrgMessage`. The hub format-validates it (bech32 + `wevibe` HRP) and derives/funds its OWN per-org serving + leader keys, so the supplied address need not be harness-controlled in the dogfood path. (`wevibe-sdk-wasm` exposes no bech32/Cosmos address-derivation function, so a known-valid constant is used rather than deriving one.)
+2. **Single memory-type across the harness (R-ONE-PATH)**: all dogfood/e2e tests now use the single `'memory'` type. Migrated the stale `'correct_implementation'` / `'negative_signal'` literals in `tests/e2e/dogfood-pipeline.test.ts`, `tests/e2e/denial-loop-full.test.ts`, and `tests/e2e/co029-stage6-runner.ts` (whose `MemoryType` alias was collapsed from a two-variant union to `'memory'`). Zero stale memory-type strings remain under `tests/`.
+
+End-to-end proof: `make dogfood` ran all nine services healthy, then the Stage-2 pipeline test passed all four steps — submit → moderator approve → leader keyword-verify + atomic batch chain submit → MCP recall. The Stage-3 batch returned `committed_count = 1` with `errors = []` (the live on-chain atomic-batch commit proof). This closes the CO-049 deferred proof.
+
+See `wevibe-meta/workspace/reports/CO-050-implementation-report.txt` for the full implementation report.

@@ -3,6 +3,20 @@ import { buildWeVibeSignedHeaders, buildBodySignedPayload } from './auth.js';
 import type { TestIdentity } from './identity.js';
 import * as canonical from './canonical.js';
 
+// leader_wallet has been required by the hub's CreateOrg handler since CO-047
+// (orgs.go: "leader_wallet is required"). It is an UNSIGNED request-body field:
+// the hub validates it only for bech32 format with the "wevibe" HRP
+// (sdk.GetFromBech32(req.LeaderWallet, "wevibe") + sdk.VerifyAddressFormat) and
+// does NOT include it in the create-org canonical/signed message. In the dogfood
+// path the hub derives and funds its OWN per-org serving + leader keys via
+// EnsureOrgAccount (orgs.go:120-153) and RegisterOrgOnChain uses those hub-derived
+// addresses — never req.LeaderWallet. Therefore a syntactically valid bech32
+// "wevibe" address suffices for the harness; it need not be a key the harness
+// controls. The wevibe-sdk-wasm bindings expose no Cosmos/bech32 address
+// derivation function (only ed25519/x25519 + crypto primitives), so we use the
+// known-valid local faucet address as a clearly-named constant (CO-050, Task A 2b).
+export const DOGFOOD_LEADER_WALLET = 'wevibe1avgyh77ycn997ja45q5q8ss8y9mr424jt4q2mj';
+
 export class HubClient {
   private baseUrl: string;
 
@@ -53,6 +67,7 @@ export class HubClient {
       org_id: orgId,
       leader_pubkey: leader.pubkeyHex,
       leader_x25519_pubkey: leader.xPubkeyHex,
+      leader_wallet: DOGFOOD_LEADER_WALLET,
       org_name: orgName,
       domain,
       fee_model: feeModel,

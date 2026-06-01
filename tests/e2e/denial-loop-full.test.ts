@@ -249,7 +249,7 @@ describe('CO-023: full denial-loop end-to-end smoke test', () => {
 
   const EPOCH_ID = 0;
   const QUERY_KEYWORD = 'nginx';
-  const MEMORY_TYPE = 'correct_implementation';
+  const MEMORY_TYPE = 'memory';
 
   let submissionHash = '';
   let baselineScore = 0;

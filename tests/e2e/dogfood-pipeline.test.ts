@@ -23,7 +23,7 @@ describe('dogfood pipeline', () => {
   let submissionHash: string;
   let plaintextMemory: string;
   let queryKeyword: string;
-  const memoryType = 'correct_implementation';
+  const memoryType = 'memory';
 
   beforeAll(async () => {
     state = generateFreshState();

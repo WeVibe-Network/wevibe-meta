@@ -13,7 +13,7 @@ import {
   type TestIdentity,
 } from '../lib/identity.js';
 
-type MemoryType = 'correct_implementation' | 'negative_signal';
+type MemoryType = 'memory';
 
 interface SubmitPayload {
   org_id: string;
@@ -359,7 +359,7 @@ async function main(): Promise<void> {
     0,
     leader,
     'CO029 honest plaintext for tier2 verification',
-    'correct_implementation',
+    'memory',
   );
   const honestSubmitResp = await submitMemory(hubUrl, orgId, honest.payload, leader);
   console.log('honest submit status/body:', honestSubmitResp.statusCode, honestSubmitResp.body);
@@ -405,7 +405,7 @@ async function main(): Promise<void> {
     0,
     leader,
     'CO029 forged-intake plaintext',
-    'correct_implementation',
+    'memory',
     attacker,
   );
   const forgedResp = await submitMemory(hubUrl, orgId, forgedAtIntake.payload, leader);
@@ -418,9 +418,9 @@ async function main(): Promise<void> {
   console.log('forged intake pending_submissions row count (expected 0):', forgedIntakeCount);
 
   console.log('--- adversarial 4: mixed batch (A honest, B forged-at-chain, C honest) ---');
-  const mixA = buildSubmitPayload(orgId, 0, leader, 'CO029 mixed A', 'correct_implementation');
-  const mixB = buildSubmitPayload(orgId, 0, leader, 'CO029 mixed B', 'negative_signal');
-  const mixC = buildSubmitPayload(orgId, 0, leader, 'CO029 mixed C', 'correct_implementation');
+  const mixA = buildSubmitPayload(orgId, 0, leader, 'CO029 mixed A', 'memory');
+  const mixB = buildSubmitPayload(orgId, 0, leader, 'CO029 mixed B', 'memory');
+  const mixC = buildSubmitPayload(orgId, 0, leader, 'CO029 mixed C', 'memory');
 
   for (const m of [mixA, mixB, mixC]) {
     const resp = await submitMemory(hubUrl, orgId, m.payload, leader);
@@ -472,7 +472,7 @@ async function main(): Promise<void> {
     0,
     leader,
     'CO029 rotation forged',
-    'correct_implementation',
+    'memory',
     attacker,
   );
   const rotationResp = await submitMemory(hubUrl, orgId, rotationForged.payload, leader);
