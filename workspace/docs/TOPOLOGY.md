@@ -279,3 +279,21 @@ Operational verification:
 
 See `wevibe-meta/workspace/reports/CO-029-implementation-report.txt` for the
 full implementation report and the Stage 6 honest + adversarial test outputs.
+
+## Sprint 32 — CO-049: Single memory-type migration (chain enum collapse + atomic-batch finalize)
+
+D-5.1 locks a **single** memory type. CO-049 finished the chain + hub half of that migration:
+
+1. **Chain enum collapsed (`wevibe-chain`)**: the proto `MemoryType` enum now carries only `MEMORY_TYPE_UNSPECIFIED = 0` and `MEMORY_TYPE_MEMORY = 1`. The retired `MEMORY_TYPE_CORRECT_IMPLEMENTATION` / `MEMORY_TYPE_NEGATIVE_SIGNAL` values are gone everywhere (chain + hub; R-NO-ORPHAN clean).
+2. **Unified canonicalization (R-ONE-PATH)**: a single `types.CanonicalMemoryType` (`x/memory/types/memory_types.go`) is called by both the memory keeper (signer path) and the reputation keeper (verification path). It returns `"memory"` for `MEMORY_TYPE_MEMORY`. This fixed a latent signing-collision bug where the reputation `VerifyUpheldReport` path previously rebuilt the canonical body with a divergent string (`correct_implementation` / `negative_signal`) that could never match a real contributor signature.
+3. **Canonical `memory_type` is always `memory`**: the contributor-signed canonical body's `memory_type` line is byte-exactly `memory_type:memory`. The dashboard signs it (`wevibe-dashboard/lib/wevibe-signing.ts` → `memory_type:memory`); the chain rebuilds the identical bytes for verification. Pinned by `wevibe-chain/x/memory/keeper/msg_server_test.go::TestBuildSubmitMemoryCanonicalBody_ByteParity`. Existing contributor signatures remain valid.
+4. **Hub mapping (`wevibe-server/wevibe-hub`)**: `mapMemoryTypeToChainEnum` (`internal/chain/submit.go`) maps protocol `"memory"` → `MEMORY_TYPE_MEMORY` (invalid types are a hard error); `mapChainMemoryTypeToString` (`internal/chain/query.go`) maps the inverse.
+5. **Three-stage pipeline finalized**: the hub-side Stage-3 atomic batch handler `BatchSubmitToChain` (`internal/api/handlers/moderation.go`) parses `extraction_result`, validates keyword weights (Σ ≈ 1.0), and calls `SubmitMemoryBatchAtomic` as one leader-signed atomic transaction. Gas is **faucet-funded** via `FAUCET_URL=http://wevibe-faucet:4470` and the `wevibe-faucet` service dependency in `docker-compose.yml`.
+
+Cross-module contract: the hub submits memory batches with a single `MEMORY_TYPE_MEMORY` enum; the canonical submit body's `memory_type` field is always `memory`. The TypeScript side (MCP + dashboard) was already single-type (`MemoryType = 'memory'`) and required no change.
+
+Operational verification:
+- `wevibe-chain` and `wevibe-server/wevibe-hub` full Go suites pass; `wevibe-mcp` + `wevibe-dashboard` `tsc --noEmit` clean; R-NO-ORPHAN grep zero across chain + server.
+- `make dogfood` brought up all nine services healthy (including `wevibe-faucet`); FAUCET_URL reachable from the hub with a funded chain address. The Stage-2 pipeline test is blocked at org creation by pre-existing `wevibe-meta` dogfood-harness drift (CO-047 `leader_wallet` contract), which is outside CO-049 scope; the end-to-end batch tx_hash proof is scheduled as the next order.
+
+See `wevibe-meta/workspace/reports/CO-049-implementation-report.txt` for the full implementation report.
