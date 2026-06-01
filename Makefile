@@ -14,7 +14,7 @@ WEVIBE_SERVER_DIR := $(WORKSPACE_ROOT)/wevibe-server
 PROTO_COSMOS_IMAGE  := ghcr.io/cosmos/proto-builder:0.18.1
 PROTO_BUF_IMAGE     := bufbuild/buf:1.34.0
 
-.PHONY: stop-host docker-up docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline clean wevibe-mcp-token
+.PHONY: stop-host docker-up docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token
 .PHONY: proto-gen proto-gen-chain proto-gen-umbral
 
 # ─── Host process cleanup ───────────────────────────────────────────────────
@@ -92,6 +92,11 @@ dogfood-pipeline:
 	@echo ""
 	@echo "=== Stage 2: Pipeline Smoke Test ==="
 	@cd tests && WEVIBE_MCP_IDENTITY_JSON="$$(docker exec wevibe-mcp node --input-type=module -e 'import("./dist/key-store.js").then(async (m) => { const identity = await m.loadIdentity(); if (!identity) process.exit(1); process.stdout.write(JSON.stringify({ edPrivkeyB64: Buffer.from(identity.edPrivkey).toString("base64"), edPubkeyB64: Buffer.from(identity.edPubkey).toString("base64"), xPrivkeyB64: Buffer.from(identity.xPrivkey).toString("base64"), xPubkeyB64: Buffer.from(identity.xPubkey).toString("base64") })); }).catch(() => process.exit(1));')" WEVIBE_MCP_SESSION_TOKEN="$$(docker exec wevibe-mcp cat /root/.wevibe/mcp-session-token)" npx vitest run e2e/dogfood-pipeline.test.ts --reporter=verbose 2>&1
+
+replay-gate:
+	@echo ""
+	@echo "=== Stage 3: Empirical replay gate matrix ==="
+	@bash ./scripts/replay-gate.sh
 
 # ─── Manual ops ─────────────────────────────────────────────────────────────
 
