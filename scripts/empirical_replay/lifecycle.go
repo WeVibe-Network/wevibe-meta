@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"math"
@@ -258,28 +257,6 @@ func (h *harness) influxContributorMemories(replayEpoch int) error {
 
 	h.memories = append(h.memories, batch...)
 	fmt.Printf("[influx] epoch %d: committed %d contributor memories (pool now %d)\n", replayEpoch+1, len(batch), len(h.memories))
-	return nil
-}
-
-func (h *harness) bootstrapLeaderWalletForHarness() error {
-	hash := sha256.Sum256([]byte(h.orgID + ":" + h.leader.EdPubHex))
-	walletAddress := "wevibe1" + hex.EncodeToString(hash[:20])
-
-	msg := fmt.Sprintf("link_wallet|%s|%s|%s", h.orgID, walletAddress, h.leader.EdPubHex)
-	sig := hex.EncodeToString(ed25519.Sign(h.leader.EdPriv, []byte(msg)))
-	body := map[string]any{
-		"wallet_address": walletAddress,
-		"signed_by":      h.leader.EdPubHex,
-		"signature":      sig,
-	}
-
-	var resp map[string]any
-	url := fmt.Sprintf("%s/v1/orgs/%s/members/wallet", h.hubURL, h.orgID)
-	if err := h.doJSON(http.MethodPost, url, body, h.signedHeader(h.leader), &resp); err != nil {
-		return fmt.Errorf("bootstrap leader wallet failed: %w", err)
-	}
-
-	h.leader.WalletRef = walletAddress
 	return nil
 }
 

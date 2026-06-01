@@ -35,6 +35,7 @@ const (
 	defaultReplayWatchdogSeconds   = 1800
 	defaultHTTPTimeoutSecs         = 20
 	defaultReplayLockPath          = "/tmp/co-042-replay.lock"
+	defaultReplayLeaderWallet      = "wevibe19rl4cm2hmr8afy4kldpxz3fka4jguq0ah00y3x"
 	defaultSeedCommitTimeoutSecs   = 300
 	defaultEpochAdvanceTimeoutSecs = 20
 	defaultLifecycleTimeoutSecs    = 300
@@ -341,12 +342,6 @@ func (h *harness) run() error {
 	if err := h.createOrg(); err != nil {
 		return err
 	}
-	if err := h.ensureWithinWatchdog("bootstrap leader wallet"); err != nil {
-		return err
-	}
-	if err := h.bootstrapLeaderWalletForHarness(); err != nil {
-		return err
-	}
 	if err := h.ensureWithinWatchdog("invite moderator"); err != nil {
 		return err
 	}
@@ -481,6 +476,7 @@ func (h *harness) createOrg() error {
 	encEnvelope := h.randHex(96)
 	searchEnvelope := h.randHex(96)
 	modEnvelope := h.randHex(96)
+	leaderWallet := getenv("REPLAY_LEADER_WALLET", defaultReplayLeaderWallet)
 
 	feeModel := map[string]any{
 		"tier":            "starter",
@@ -507,6 +503,7 @@ func (h *harness) createOrg() error {
 	body := map[string]any{
 		"org_id":               h.orgID,
 		"leader_pubkey":        h.leader.EdPubHex,
+		"leader_wallet":        leaderWallet,
 		"leader_x25519_pubkey": h.leader.XPubHex,
 		"org_name":             "CO-034 Empirical Replay Org",
 		"domain":               domain,
@@ -520,19 +517,17 @@ func (h *harness) createOrg() error {
 	}
 
 	var resp struct {
-		TxHash string `json:"tx_hash"`
+		OrgID string `json:"org_id"`
 	}
 	if err := h.doJSON(http.MethodPost, h.hubURL+"/v1/orgs", body, nil, &resp); err != nil {
 		return fmt.Errorf("create org failed: %w", err)
 	}
 
-	if strings.TrimSpace(resp.TxHash) == "" {
-		return fmt.Errorf("create org response missing tx_hash")
+	if strings.TrimSpace(resp.OrgID) == "" {
+		return fmt.Errorf("create org response missing org_id")
 	}
 
-	if err := h.waitForTxCommit(resp.TxHash, h.seedCommitTimeout); err != nil {
-		return fmt.Errorf("wait for org registration tx commit: %w", err)
-	}
+	h.leader.WalletRef = leaderWallet
 
 	return nil
 }

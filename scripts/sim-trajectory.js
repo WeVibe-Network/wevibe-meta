@@ -11,25 +11,17 @@
 // observed survival against the mathematically-expected value and flag
 // divergence in real time instead of waiting for the full run.
 //
-// The traffic regime is parameterised so one script can emit the reference for
-// every replay regime. The sim config MUST match the replay run it is the
-// reference for (REPLAY_QPE ↔ SIM_QPE, REPLAY_CONT_RATE ↔ SIM_CONT_RATE):
+// The traffic regime is parameterized so one script can emit references for
+// every replay regime. The sim config MUST match the replay run exactly:
 //
-//   STEADY:    SIM_QPE=15 SIM_CONT_RATE=2   (sim base contRate)
-//   BOOTSTRAP: SIM_QPE=4  SIM_CONT_RATE=2   (only query volume drops)
-//   HEAVY:     SIM_QPE=45 SIM_CONT_RATE=6   (more queries AND more contributions)
+//   STEADY:    qPerEpoch=15 contRate=0
+//   BOOTSTRAP: qPerEpoch=4  contRate=0
+//   HEAVY:     qPerEpoch=45 contRate=6
 //
 // Usage:
-//   node scripts/sim-trajectory.js [epochs] > /tmp/sim-trajectory.json
-//   SIM_QPE=4  node scripts/sim-trajectory.js 300 > /tmp/sim-trajectory-bootstrap.json
-//   SIM_QPE=45 SIM_CONT_RATE=6 node scripts/sim-trajectory.js 300 > /tmp/sim-trajectory-heavy.json
-
-function envInt(name, fallback) {
-  const raw = (process.env[name] || "").trim();
-  if (raw === "") return fallback;
-  const parsed = parseInt(raw, 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
+//   node scripts/sim-trajectory.js --regime steady --epochs 300 > /tmp/sim-trajectory-steady.json
+//   SIM_REGIME=bootstrap node scripts/sim-trajectory.js --epochs 300 > /tmp/sim-trajectory-bootstrap.json
+//   node scripts/sim-trajectory.js --regime heavy 300 > /tmp/sim-trajectory-heavy.json
 
 const MAX_W = 10000;
 const ET = {
@@ -40,19 +32,69 @@ const ET = {
 const SEEDS = [42, 123, 7, 999, 31415];
 const RETRIEVAL_THRESHOLD = 1500;
 
+const REGIMES = {
+  steady: { qPerEpoch: 15, contRate: 0 },
+  bootstrap: { qPerEpoch: 4, contRate: 0 },
+  heavy: { qPerEpoch: 45, contRate: 6 },
+};
+
+function parseArgs(argv) {
+  let regime = (process.env.SIM_REGIME || "steady").trim().toLowerCase() || "steady";
+  let epochsRaw = process.env.SIM_EPOCHS;
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--regime") {
+      regime = ((argv[i + 1] || "").trim().toLowerCase() || regime);
+      i++;
+      continue;
+    }
+    if (a.startsWith("--regime=")) {
+      regime = (a.slice("--regime=".length).trim().toLowerCase() || regime);
+      continue;
+    }
+    if (a === "--epochs") {
+      epochsRaw = argv[i + 1] || epochsRaw;
+      i++;
+      continue;
+    }
+    if (a.startsWith("--epochs=")) {
+      epochsRaw = a.slice("--epochs=".length) || epochsRaw;
+      continue;
+    }
+    if (!a.startsWith("--") && epochsRaw == null) {
+      epochsRaw = a;
+    }
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(REGIMES, regime)) {
+    throw new Error(`invalid regime \"${regime}\"; expected one of: ${Object.keys(REGIMES).join(", ")}`);
+  }
+  const epochs = parseInt(epochsRaw || "300", 10);
+  if (!Number.isFinite(epochs) || epochs <= 0) {
+    throw new Error(`invalid epochs \"${epochsRaw}\"; expected positive integer`);
+  }
+  return { regime, epochs };
+}
+
 // Matches wevibe-meta/scripts/empirical_replay constants. kwSpace=50 because
 // the replay draws memory + query keywords from a 50-word fixtureVocabulary.
-// qPerEpoch and contRate are the per-regime traffic knobs (see header).
-const SC = {
-  initMem: 100, qSize: 3, servePer: 3, badRate: 0.12,
-  tpDeny: 0.55, fpDeny: 0.04, maxKw: 7, kwSpace: 50,
-  contRate: envInt("SIM_CONT_RATE", 2),
-  qPerEpoch: envInt("SIM_QPE", 15),
-};
+function makeScenario(regime) {
+  return {
+    initMem: 100,
+    qSize: 3,
+    servePer: 3,
+    badRate: 0.12,
+    tpDeny: 0.55,
+    fpDeny: 0.04,
+    maxKw: 7,
+    kwSpace: 50,
+    ...REGIMES[regime],
+  };
+}
 
 function mb(a) { return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 function pick(n, max, r) { const p = Array.from({ length: max }, (_, i) => i); const o = []; for (let i = 0; i < Math.min(n, max); i++) o.push(p.splice(Math.floor(r() * p.length), 1)[0]); return o; }
-function mm(id, e, r) { const nk = 3 + Math.floor(r() * Math.max(1, SC.maxKw - 2)); return { id, ce: e, arch: false, good: r() >= SC.badRate, sv: 0, dn: 0, kws: pick(nk, SC.kwSpace, r).map((k) => ({ id: k, w: MAX_W })) }; }
+function mm(id, e, r, sc) { const nk = 3 + Math.floor(r() * Math.max(1, sc.maxKw - 2)); return { id, ce: e, arch: false, good: r() >= sc.badRate, sv: 0, dn: 0, kws: pick(nk, sc.kwSpace, r).map((k) => ({ id: k, w: MAX_W })) }; }
 function qscore(m, q) { let s = 0; for (const k of m.kws) if (q.has(k.id)) s += k.w; return s; }
 function decay(m, e, sv, dn, km) {
   if (e - m.ce < ET.grace) return;
@@ -68,23 +110,23 @@ function decay(m, e, sv, dn, km) {
 }
 
 // Run one seed; record good/bad survival at the END of every epoch.
-function runSeed(seed, epochs) {
+function runSeed(seed, epochs, sc) {
   const r = mb(seed);
   const M = [];
-  for (let i = 0; i < SC.initMem; i++) M.push(mm(i, 0, r));
+  for (let i = 0; i < sc.initMem; i++) M.push(mm(i, 0, r, sc));
   const perEpoch = [];
   for (let e = 0; e < epochs; e++) {
-    for (let c = 0; c < SC.contRate; c++) M.push(mm(M.length, e, r));
+    for (let c = 0; c < sc.contRate; c++) M.push(mm(M.length, e, r, sc));
     const act = M.filter((m) => !m.arch);
     const ec = new Map();
-    for (let q = 0; q < SC.qPerEpoch; q++) {
-      const qk = new Set(pick(SC.qSize, SC.kwSpace, r));
-      const rk = act.map((m) => ({ m, s: qscore(m, qk) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s).slice(0, SC.servePer);
+    for (let q = 0; q < sc.qPerEpoch; q++) {
+      const qk = new Set(pick(sc.qSize, sc.kwSpace, r));
+      const rk = act.map((m) => ({ m, s: qscore(m, qk) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s).slice(0, sc.servePer);
       rk.forEach(({ m }) => {
         const c = ec.get(m.id) || { sv: 0, dn: 0, k: new Set() };
         c.sv++; for (const k of m.kws) if (qk.has(k.id)) c.k.add(k.id);
         ec.set(m.id, c); m.sv++;
-        const pd = m.good ? SC.fpDeny : SC.tpDeny;
+        const pd = m.good ? sc.fpDeny : sc.tpDeny;
         if (r() < pd) { c.dn++; m.dn++; }
       });
     }
@@ -102,10 +144,11 @@ function runSeed(seed, epochs) {
 }
 
 function main() {
-  const epochs = parseInt(process.argv[2] || "300", 10);
+  const { regime, epochs } = parseArgs(process.argv);
+  const sc = makeScenario(regime);
   const acc = Array.from({ length: epochs }, () => ({ good: 0, bad: 0 }));
   for (const s of SEEDS) {
-    const tr = runSeed(s, epochs);
+    const tr = runSeed(s, epochs, sc);
     for (let e = 0; e < epochs; e++) { acc[e].good += tr[e].good; acc[e].bad += tr[e].bad; }
   }
   const out = acc.map((a, e) => {
@@ -113,8 +156,8 @@ function main() {
     const bad = a.bad / SEEDS.length;
     return { epoch: e + 1, good: +good.toFixed(4), bad: +bad.toFixed(4), gap: +(good - bad).toFixed(4) };
   });
-  const scenario = `q${SC.qPerEpoch}-cont${SC.contRate}-kw${SC.kwSpace}`;
-  process.stdout.write(JSON.stringify({ scenario, grace: ET.grace, epochs, qPerEpoch: SC.qPerEpoch, contRate: SC.contRate, trajectory: out }, null, 0) + "\n");
+  const scenario = `${regime}-q${sc.qPerEpoch}-cont${sc.contRate}-kw${sc.kwSpace}`;
+  process.stdout.write(JSON.stringify({ scenario, regime, grace: ET.grace, epochs, qPerEpoch: sc.qPerEpoch, contRate: sc.contRate, trajectory: out }, null, 0) + "\n");
 }
 
 main();
