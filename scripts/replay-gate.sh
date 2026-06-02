@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 META_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+RESULTS_FILE="${RESULTS_FILE:-$META_DIR/workspace/reports/replay-gate-matrix-$(date +%Y%m%d-%H%M%S).txt}"
+mkdir -p "$(dirname "$RESULTS_FILE")"
 
 REPLAY_BINARY="${REPLAY_BINARY:-/tmp/co-034-replay}"
 # A real 300-epoch cell runs ~78 min (~15s/epoch = N blocks x 5s; the 2s epoch
@@ -365,12 +367,23 @@ for regime in "${REGIMES[@]}"; do
   done
 done
 
-print_summary_matrix
-echo ""
+run_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "RUN CONFIG regimes=${REGIMES[*]} seeds=${SEEDS[*]} epochs=${REPLAY_TOTAL_EPOCHS} timestamp=${run_timestamp}" >> "$RESULTS_FILE"
+for entry in "${RESULTS[@]}"; do
+  IFS='|' read -r rr ss chain sim delta status good bad <<< "$entry"
+  echo "CELL regime=${rr} seed=${ss} chain.gap=${chain} sim.gap=${sim} delta=${delta} status=${status} good=${good} bad=${bad}" >> "$RESULTS_FILE"
+done
+
+print_summary_matrix | tee -a "$RESULTS_FILE"
+echo "" | tee -a "$RESULTS_FILE"
 
 if [ "$FAIL_COUNT" -gt 0 ]; then
-  echo "OVERALL VERDICT: FAIL (${FAIL_COUNT}/${TOTAL_COUNT} cells failed)"
+  verdict="OVERALL VERDICT: FAIL (${FAIL_COUNT}/${TOTAL_COUNT} cells failed)"
+  echo "$verdict" | tee -a "$RESULTS_FILE"
+  echo "Results recorded to: $RESULTS_FILE"
   exit 1
 fi
 
-echo "OVERALL VERDICT: PASS (${TOTAL_COUNT}/${TOTAL_COUNT} cells passed)"
+verdict="OVERALL VERDICT: PASS (${TOTAL_COUNT}/${TOTAL_COUNT} cells passed)"
+echo "$verdict" | tee -a "$RESULTS_FILE"
+echo "Results recorded to: $RESULTS_FILE"
