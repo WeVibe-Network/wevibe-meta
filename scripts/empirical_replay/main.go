@@ -43,6 +43,7 @@ const (
 
 	minEpochsBeforeEarlyStop = 75
 	earlyStopGapTolerancePP  = 1.0
+	earlyStopBadFloorPP      = 0.0 // bad-persistence (in pp) must reach this floor before early-stop is allowed
 )
 
 var fixtureVocabulary = []string{
@@ -466,7 +467,7 @@ func (h *harness) run() error {
 		fmt.Printf("[epoch %d/%d] traffic+advance took %v\n", e+1, totalEpochs, epochDuration)
 
 		if h.checkpointEvery > 0 && (e+1)%h.checkpointEvery == 0 && (e+1) < totalEpochs {
-			gapPP, err := h.runCheckpoint(e + 1)
+			gapPP, badPP, err := h.runCheckpoint(e + 1)
 			if err != nil {
 				return err
 			}
@@ -487,11 +488,12 @@ func (h *harness) run() error {
 						maxGapPP = sampleGapPP
 					}
 				}
-				if maxGapPP-minGapPP <= earlyStopGapTolerancePP {
+				if maxGapPP-minGapPP <= earlyStopGapTolerancePP && badPP <= earlyStopBadFloorPP {
 					remainingEpochs := totalEpochs - (e + 1)
-					fmt.Printf("[early-stop] gap plateaued at epoch %d (last3 gaps stable within %.2fpp); skipping remaining %d epochs\n",
+					fmt.Printf("[early-stop] gap plateaued AND bad-persistence at floor at epoch %d (last3 gaps within %.2fpp, bad=%.1fpp); skipping remaining %d epochs\n",
 						e+1,
 						earlyStopGapTolerancePP,
+						badPP,
 						remainingEpochs,
 					)
 					break
@@ -1185,19 +1187,20 @@ func (h *harness) expectedAt(replayEpoch int) (simTrajPoint, bool) {
 // runCheckpoint polls the chain for current good/bad survival and prints it
 // alongside the sim's expected value, with a divergence verdict. This surfaces
 // "is decay tracking the model" within ~40 epochs instead of after a full run.
-func (h *harness) runCheckpoint(replayEpoch int) (float64, error) {
+func (h *harness) runCheckpoint(replayEpoch int) (gapPP float64, badPP float64, err error) {
 	good, bad, err := h.measureSurvivalQuick()
 	if err != nil {
-		return 0, fmt.Errorf("checkpoint epoch %d: %w", replayEpoch, err)
+		return 0, 0, fmt.Errorf("checkpoint epoch %d: %w", replayEpoch, err)
 	}
 	gap := good - bad
-	gapPP := gap * 100
+	gapPP = gap * 100
+	badPP = bad * 100
 
 	exp, ok := h.expectedAt(replayEpoch)
 	if !ok {
 		fmt.Printf("[monitor] epoch %3d | OBSERVED good=%.3f bad=%.3f gap=%.1fpp (no sim reference)\n",
 			replayEpoch, good, bad, gapPP)
-		return gapPP, nil
+		return gapPP, badPP, nil
 	}
 
 	const tol = 0.15
@@ -1212,7 +1215,7 @@ func (h *harness) runCheckpoint(replayEpoch int) (float64, error) {
 
 	fmt.Printf("[monitor] epoch %3d | obs good=%.3f bad=%.3f gap=%5.1fpp | sim(e-%d) good=%.3f bad=%.3f gap=%5.1fpp | dGood=%+.3f dBad=%+.3f | %s\n",
 		replayEpoch, good, bad, gapPP, h.simShift, exp.Good, exp.Bad, exp.Gap*100, goodOff, badOff, verdict)
-	return gapPP, nil
+	return gapPP, badPP, nil
 }
 
 // measureSurvivalQuick returns good/bad survival from chain archival state only
