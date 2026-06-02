@@ -40,6 +40,9 @@ const (
 	defaultEpochAdvanceTimeoutSecs = 20
 	defaultLifecycleTimeoutSecs    = 300
 	defaultBatchIntervalSecs       = 5
+
+	minEpochsBeforeEarlyStop = 75
+	earlyStopGapTolerancePP  = 1.0
 )
 
 var fixtureVocabulary = []string{
@@ -373,12 +376,23 @@ func (h *harness) run() error {
 	h.loadSimTrajectory()
 
 	totalEpochs := envPositiveIntOrDefault("REPLAY_TOTAL_EPOCHS", simEpochs*epochMult)
+	totalTxs := int64(0)
+	totalBlocks := int64(0)
+	totalSecs := 0.0
+	epochSamples := 0
+	totalDrainLag := time.Duration(0)
+	maxPeakPending := 0
+	checkpointGapsPP := make([]float64, 0, 3)
 	for e := 0; e < totalEpochs; e++ {
 		if err := h.ensureWithinWatchdog(fmt.Sprintf("epoch loop %d/%d", e+1, totalEpochs)); err != nil {
 			return err
 		}
 
 		epochStart := time.Now()
+		startHeight, startHeightErr := h.getChainBlockHeight()
+		if startHeightErr != nil {
+			fmt.Printf("[warn] epoch %d/%d throughput sample skipped (start height): %v\n", e+1, totalEpochs, startHeightErr)
+		}
 		currentEpoch, err := h.getChainCurrentEpoch()
 		if err != nil {
 			return fmt.Errorf("resolve chain epoch before epoch %d: %w", e+1, err)
@@ -405,19 +419,83 @@ func (h *harness) run() error {
 		// zero-signal guard suppresses idle decay, and nothing decays. Waiting
 		// for this epoch's events to commit bounds relay lag to ~one epoch so
 		// the settle window holds and per-epoch decay sees real traffic.
-		if err := h.drainServeRelay(currentEpoch); err != nil {
+		drainLag, peakPending, err := h.drainServeRelay(currentEpoch)
+		if err != nil {
 			return err
+		}
+		totalDrainLag += drainLag
+		if peakPending > maxPeakPending {
+			maxPeakPending = peakPending
 		}
 
 		if err := h.waitEpochAdvance(currentEpoch+1, h.epochAdvanceTimeout); err != nil {
 			return err
 		}
 
-		fmt.Printf("[epoch %d/%d] traffic+advance took %v\n", e+1, totalEpochs, time.Since(epochStart))
+		endHeight, endHeightErr := h.getChainBlockHeight()
+		if endHeightErr != nil {
+			fmt.Printf("[warn] epoch %d/%d throughput sample skipped (end height): %v\n", e+1, totalEpochs, endHeightErr)
+		}
+
+		epochDuration := time.Since(epochStart)
+		if startHeightErr == nil && endHeightErr == nil {
+			if endHeight < startHeight {
+				fmt.Printf("[warn] epoch %d/%d throughput sample skipped (height regression: start=%d end=%d)\n", e+1, totalEpochs, startHeight, endHeight)
+			} else {
+				epochBlocks := endHeight - startHeight
+				epochTxs := 0
+				sampleFailed := false
+				for height := startHeight + 1; height <= endHeight; height++ {
+					blockTxs, err := h.countTxsInBlock(height)
+					if err != nil {
+						fmt.Printf("[warn] epoch %d/%d throughput sample skipped (block %d tx count): %v\n", e+1, totalEpochs, height, err)
+						sampleFailed = true
+						break
+					}
+					epochTxs += blockTxs
+				}
+				if !sampleFailed {
+					totalTxs += int64(epochTxs)
+					totalBlocks += epochBlocks
+					totalSecs += epochDuration.Seconds()
+					epochSamples++
+				}
+			}
+		}
+
+		fmt.Printf("[epoch %d/%d] traffic+advance took %v\n", e+1, totalEpochs, epochDuration)
 
 		if h.checkpointEvery > 0 && (e+1)%h.checkpointEvery == 0 && (e+1) < totalEpochs {
-			if err := h.runCheckpoint(e + 1); err != nil {
+			gapPP, err := h.runCheckpoint(e + 1)
+			if err != nil {
 				return err
+			}
+
+			checkpointGapsPP = append(checkpointGapsPP, gapPP)
+			if len(checkpointGapsPP) > 3 {
+				checkpointGapsPP = checkpointGapsPP[len(checkpointGapsPP)-3:]
+			}
+
+			if (e+1) >= minEpochsBeforeEarlyStop && len(checkpointGapsPP) >= 3 {
+				minGapPP := checkpointGapsPP[0]
+				maxGapPP := checkpointGapsPP[0]
+				for _, sampleGapPP := range checkpointGapsPP[1:] {
+					if sampleGapPP < minGapPP {
+						minGapPP = sampleGapPP
+					}
+					if sampleGapPP > maxGapPP {
+						maxGapPP = sampleGapPP
+					}
+				}
+				if maxGapPP-minGapPP <= earlyStopGapTolerancePP {
+					remainingEpochs := totalEpochs - (e + 1)
+					fmt.Printf("[early-stop] gap plateaued at epoch %d (last3 gaps stable within %.2fpp); skipping remaining %d epochs\n",
+						e+1,
+						earlyStopGapTolerancePP,
+						remainingEpochs,
+					)
+					break
+				}
 			}
 		}
 
@@ -444,6 +522,34 @@ func (h *harness) run() error {
 	fmt.Printf("Bad persisting:      %.4f\n", badPersist)
 	fmt.Printf("Decoupling gap:      %.4fpp\n", gap*100)
 	fmt.Printf("Sprint contract:     ≥ 75pp     [%s]\n", passFail(gap*100 >= 75.0))
+
+	avgTxPerSec := 0.0
+	if totalSecs > 0 {
+		avgTxPerSec = float64(totalTxs) / totalSecs
+	}
+
+	avgBlocksPerEpoch := 0.0
+	if epochSamples > 0 {
+		avgBlocksPerEpoch = float64(totalBlocks) / float64(epochSamples)
+	}
+
+	avgTxPerBlock := 0.0
+	if totalBlocks > 0 {
+		avgTxPerBlock = float64(totalTxs) / float64(totalBlocks)
+	}
+
+	avgDrainLag := time.Duration(0)
+	if epochSamples > 0 {
+		avgDrainLag = totalDrainLag / time.Duration(epochSamples)
+	}
+
+	fmt.Printf("Avg tx/sec:          %.2f\n", avgTxPerSec)
+	fmt.Printf("Avg blocks/epoch:    %.2f\n", avgBlocksPerEpoch)
+	fmt.Printf("Avg tx/block:        %.2f\n", avgTxPerBlock)
+	fmt.Printf("Avg relay drain lag: %v\n", avgDrainLag)
+	fmt.Printf("Peak serve-queue:    %d\n", maxPeakPending)
+	fmt.Printf("Total txs observed:  %d\n", totalTxs)
+	fmt.Printf("Total blocks:        %d\n", totalBlocks)
 
 	return nil
 }
@@ -1079,18 +1185,19 @@ func (h *harness) expectedAt(replayEpoch int) (simTrajPoint, bool) {
 // runCheckpoint polls the chain for current good/bad survival and prints it
 // alongside the sim's expected value, with a divergence verdict. This surfaces
 // "is decay tracking the model" within ~40 epochs instead of after a full run.
-func (h *harness) runCheckpoint(replayEpoch int) error {
+func (h *harness) runCheckpoint(replayEpoch int) (float64, error) {
 	good, bad, err := h.measureSurvivalQuick()
 	if err != nil {
-		return fmt.Errorf("checkpoint epoch %d: %w", replayEpoch, err)
+		return 0, fmt.Errorf("checkpoint epoch %d: %w", replayEpoch, err)
 	}
 	gap := good - bad
+	gapPP := gap * 100
 
 	exp, ok := h.expectedAt(replayEpoch)
 	if !ok {
 		fmt.Printf("[monitor] epoch %3d | OBSERVED good=%.3f bad=%.3f gap=%.1fpp (no sim reference)\n",
-			replayEpoch, good, bad, gap*100)
-		return nil
+			replayEpoch, good, bad, gapPP)
+		return gapPP, nil
 	}
 
 	const tol = 0.15
@@ -1104,8 +1211,8 @@ func (h *harness) runCheckpoint(replayEpoch int) error {
 	}
 
 	fmt.Printf("[monitor] epoch %3d | obs good=%.3f bad=%.3f gap=%5.1fpp | sim(e-%d) good=%.3f bad=%.3f gap=%5.1fpp | dGood=%+.3f dBad=%+.3f | %s\n",
-		replayEpoch, good, bad, gap*100, h.simShift, exp.Good, exp.Bad, exp.Gap*100, goodOff, badOff, verdict)
-	return nil
+		replayEpoch, good, bad, gapPP, h.simShift, exp.Good, exp.Bad, exp.Gap*100, goodOff, badOff, verdict)
+	return gapPP, nil
 }
 
 // measureSurvivalQuick returns good/bad survival from chain archival state only
@@ -1270,25 +1377,75 @@ func (h *harness) waitEpochAdvance(targetEpoch int, timeout time.Duration) error
 // settle window, the org reads zero traffic at assessment, the zero-signal
 // guard fires, and decay never runs. assessedEpoch is informational (for the
 // watchdog message only). Bounded by the lifecycle timeout.
-func (h *harness) drainServeRelay(assessedEpoch int) error {
+func (h *harness) drainServeRelay(assessedEpoch int) (time.Duration, int, error) {
+	drainStart := time.Now()
 	deadline := time.Now().Add(h.lifecycleTimeout)
 	url := fmt.Sprintf("%s/v1/test/orgs/%s/serve-queue", h.hubURL, h.orgID)
+	peakPending := 0
 	for time.Now().Before(deadline) {
 		if err := h.ensureWithinWatchdog(fmt.Sprintf("drain serve relay (epoch %d)", assessedEpoch)); err != nil {
-			return err
+			return 0, peakPending, err
 		}
 		var resp struct {
 			PendingTotal int `json:"pending_total"`
 		}
 		if err := h.doJSON(http.MethodGet, url, nil, nil, &resp); err != nil {
-			return fmt.Errorf("query serve-queue depth: %w", err)
+			return 0, peakPending, fmt.Errorf("query serve-queue depth: %w", err)
+		}
+		if resp.PendingTotal > peakPending {
+			peakPending = resp.PendingTotal
 		}
 		if resp.PendingTotal == 0 {
-			return nil
+			return time.Since(drainStart), peakPending, nil
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return fmt.Errorf("timeout draining serve relay for epoch %d", assessedEpoch)
+	return 0, peakPending, fmt.Errorf("timeout draining serve relay for epoch %d", assessedEpoch)
+}
+
+func (h *harness) getChainBlockHeight() (int64, error) {
+	url := h.chainRPC + "/block_results"
+	var resp struct {
+		Result struct {
+			Height              string `json:"height"`
+			FinalizeBlockEvents []struct {
+				Type       string `json:"type"`
+				Attributes []struct {
+					Key   string `json:"key"`
+					Value string `json:"value"`
+				} `json:"attributes"`
+			} `json:"finalize_block_events"`
+		} `json:"result"`
+	}
+	if err := h.doJSON(http.MethodGet, url, nil, nil, &resp); err != nil {
+		return 0, fmt.Errorf("query chain block_results failed: %w", err)
+	}
+
+	heightRaw := strings.Trim(strings.TrimSpace(resp.Result.Height), "\"")
+	height, err := strconv.ParseInt(heightRaw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse chain block_results height %q: %w", resp.Result.Height, err)
+	}
+
+	return height, nil
+}
+
+func (h *harness) countTxsInBlock(height int64) (int, error) {
+	url := fmt.Sprintf("%s/block?height=%d", h.chainRPC, height)
+	var resp struct {
+		Result struct {
+			Block struct {
+				Data struct {
+					Txs []json.RawMessage `json:"txs"`
+				} `json:"data"`
+			} `json:"block"`
+		} `json:"result"`
+	}
+	if err := h.doJSON(http.MethodGet, url, nil, nil, &resp); err != nil {
+		return 0, fmt.Errorf("query block at height %d failed: %w", height, err)
+	}
+
+	return len(resp.Result.Block.Data.Txs), nil
 }
 
 func (h *harness) getChainCurrentEpoch() (int, error) {

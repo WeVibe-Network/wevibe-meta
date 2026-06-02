@@ -14,7 +14,7 @@ WEVIBE_SERVER_DIR := $(WORKSPACE_ROOT)/wevibe-server
 PROTO_COSMOS_IMAGE  := ghcr.io/cosmos/proto-builder:0.18.1
 PROTO_BUF_IMAGE     := bufbuild/buf:1.34.0
 
-.PHONY: stop-host docker-up docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token
+.PHONY: stop-host docker-up docker-build-fast docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token
 .PHONY: proto-gen proto-gen-chain proto-gen-umbral
 
 # ─── Host process cleanup ───────────────────────────────────────────────────
@@ -41,9 +41,13 @@ docker-up:
 	@echo "Stack started. Waiting for services to become healthy..."
 	@cd "$(WEVIBE_SERVER_DIR)" && ./scripts/wait-for-stack-healthy.sh
 
+docker-build-fast:
+	@echo "=== Building WeVibe fast stack images once ==="
+	@cd "$(WEVIBE_SERVER_DIR)" && docker compose -f docker-compose.yml -f docker-compose.fast.yml build
+
 docker-up-fast:
 	@echo "=== Bringing up WeVibe stack via Docker (fast epoch mode) ==="
-	@cd "$(WEVIBE_SERVER_DIR)" && docker compose -f docker-compose.yml -f docker-compose.fast.yml up -d --build
+	@cd "$(WEVIBE_SERVER_DIR)" && docker compose -f docker-compose.yml -f docker-compose.fast.yml up -d
 	@echo "Fast stack started. Waiting for services to become healthy..."
 	@cd "$(WEVIBE_SERVER_DIR)" && ./scripts/wait-for-stack-healthy.sh
 

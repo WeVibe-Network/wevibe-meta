@@ -352,6 +352,9 @@ echo "=== Building empirical replay harness binary ==="
   go build -o "$REPLAY_BINARY" .
 )
 
+echo "=== Pre-building fast stack image once (reused across all cells) ==="
+make -C "$META_DIR" docker-build-fast
+
 RESULTS=()
 FAIL_COUNT=0
 TOTAL_COUNT=0
