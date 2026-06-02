@@ -1,3 +1,5 @@
+> **[ARCHIVED / SUPERSEDED 2026-06-02]** These constants were calibrated for a discarded *time-decay* sim model (CO-042 Stage 2). The locked, on-chain decay is **Earned Trust** (D-4.2) with a different parameter set (serveD 220 / denialD 900 / idleD 600 / grace 20 / retrievalThreshold 1500bps, verified against `wevibe-chain/x/memory/types/params.go`). These figures do NOT apply to the live chain. Kept as a historical artifact only.
+
 # Decay Calibration (CO-042 Stage 2 Task B)
 
 ## Canonical model basis

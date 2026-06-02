@@ -1,3 +1,5 @@
+> **[ARCHIVED / SUPERSEDED 2026-06-02]** This migration plan is fully shipped (CO-049 chain `0b560d6` / server `4be0516`; CO-050 meta `f1b8bfe`). The chain enum is collapsed to the single `MEMORY_TYPE_MEMORY`; `implement`/`dnd` are internal blob fields. Kept as a historical diff only — not a live spec.
+
 # WeVibe Memory Type Migration — Context Diff
 
 **Migration:** Single memory type with internal `implement`/`dnd` fields (replaces dual-type enum)
