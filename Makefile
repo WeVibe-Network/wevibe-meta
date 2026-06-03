@@ -8,13 +8,16 @@
 
 WORKSPACE_ROOT := $(abspath ..)
 WEVIBE_SERVER_DIR := $(WORKSPACE_ROOT)/wevibe-server
+WEVIBE_DASHBOARD_DIR := $(WEVIBE_SERVER_DIR)/wevibe-dashboard
+SDK_WASM_PKG_DIR := $(WORKSPACE_ROOT)/wevibe-sdk/pkg
+SDK_WASM_VENDOR_DIR := $(WEVIBE_DASHBOARD_DIR)/vendor/wevibe-sdk-wasm
 
 # Proto generation image pins. R-DOCKER-PINNED — never use :latest.
 # See DECISIONS.md D-14.21 / R-PROTO-REGEN.
 PROTO_COSMOS_IMAGE  := ghcr.io/cosmos/proto-builder:0.18.1
 PROTO_BUF_IMAGE     := bufbuild/buf:1.34.0
 
-.PHONY: stop-host docker-up docker-build-fast docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token
+.PHONY: stop-host docker-up docker-build-fast docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token sync-sdk-wasm
 .PHONY: proto-gen proto-gen-chain proto-gen-umbral
 
 # ─── Host process cleanup ───────────────────────────────────────────────────
@@ -109,6 +112,14 @@ clean: docker-down stop-host
 
 wevibe-mcp-token:
 	@docker exec wevibe-mcp cat /root/.wevibe/mcp-session-token
+
+sync-sdk-wasm:
+	@mkdir -p "$(SDK_WASM_VENDOR_DIR)"
+	@cp "$(SDK_WASM_PKG_DIR)/wevibe_sdk_wasm.js" "$(SDK_WASM_VENDOR_DIR)/wevibe_sdk_wasm.js"
+	@cp "$(SDK_WASM_PKG_DIR)/wevibe_sdk_wasm_bg.wasm" "$(SDK_WASM_VENDOR_DIR)/wevibe_sdk_wasm_bg.wasm"
+	@cp "$(SDK_WASM_PKG_DIR)/wevibe_sdk_wasm.d.ts" "$(SDK_WASM_VENDOR_DIR)/wevibe_sdk_wasm.d.ts"
+	@cp "$(SDK_WASM_PKG_DIR)/package.json" "$(SDK_WASM_VENDOR_DIR)/package.json"
+	@echo "Synced wevibe-sdk WASM bundle into $(SDK_WASM_VENDOR_DIR)"
 
 # ─── Proto generation (R-PROTO-REGEN / R-DOCKER-PINNED / R-NO-LOCAL-PROTOC) ─
 
