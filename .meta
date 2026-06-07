@@ -9,6 +9,7 @@
     "wevibe-opencode-plugin": "git@github.com:WeVibe-Network/wevibe-opencode-plugin.git",
     "wevibe-guard": "git@github.com:WeVibe-Network/wevibe-guard.git",
     "wevibe-umbral": "git@github.com:WeVibe-Network/wevibe-umbral.git",
-    "wevibe-social-graph": "git@github.com:WeVibe-Network/wevibe-social-graph.git"
+    "wevibe-social-graph": "git@github.com:WeVibe-Network/wevibe-social-graph.git",
+    "wevibe-faucet": "git@github.com:WeVibe-Network/wevibe-faucet.git"
   }
 }

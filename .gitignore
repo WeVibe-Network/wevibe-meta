@@ -1,12 +1,15 @@
-# Worker AI operating context - local only, never committed
+# Local orchestration / working context — never committed
 AGENTS.md
+MANAGER.md
+WORKER.md
 SESSIONCONTINUANCE.md
 
-# OS artifacts
+# Local working area (scratch, reports, calibration output)
+workspace/
+
+# OS / editor artifacts
 .DS_Store
 Thumbs.db
-
-# Editor artifacts
 .vscode/
 .idea/
 *.swp
@@ -25,39 +28,9 @@ dist/
 npm-debug.log*
 yarn-debug.log*
 
-# Per-session worker artifacts
-workspace/reports/
-workspace/reports/MO-001-implementation-report.txt
-workspace/reports/MO-002-implementation-report.txt
-workspace/reports/MO-003-implementation-report.txt
-workspace/reports/MO-003-PostCommit-implementation-report.txt
-workspace/reports/MO-003.5-implementation-report.txt
-workspace/reports/MO-004-implementation-report.txt
-workspace/reports/MO-004-PostCommit-implementation-report.txt
-workspace/reports/MO-005-implementation-report.txt
-workspace/reports/MO-006-Gather-A-implementation-report.txt
-workspace/reports/MO-006-implementation-report.txt
-workspace/reports/MO-006-PostCommit-implementation-report.txt
-workspace/reports/MO-006.5-implementation-report.txt
-workspace/reports/MO-006.5-questions-report.txt
-
-# Personal planning docs
-workspace/docs/MYTODOS.md
-workspace/docs/IMPROVEMENT*.md
-workspace/docs/PARALLEL.md
-
-# Walter-internal templates (D-S28-WEVIBE-META-TEMPLATES-GITIGNORED)
-workspace/templates/CO-TEMPLATE.md
-workspace/templates/MO-TEMPLATE.md
-workspace/templates/SESSION-TEMPLATE.md
-workspace/templates/DMO-TEMPLATE.md
-workspace/templates/GO-TEMPLATE.md
-
 # Runtime artifacts from `make dogfood`
 .logs/
 .pids/
-
-# Build artifacts
 test-results/
 
 # meta tool local state
