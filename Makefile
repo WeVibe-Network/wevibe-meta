@@ -8,7 +8,9 @@
 
 WORKSPACE_ROOT := $(abspath ..)
 WEVIBE_SERVER_DIR := $(WORKSPACE_ROOT)/wevibe-server
+WEVIBE_HUB_DIR := $(WEVIBE_SERVER_DIR)/wevibe-hub
 WEVIBE_DASHBOARD_DIR := $(WEVIBE_SERVER_DIR)/wevibe-dashboard
+WEVIBE_SIM_DIR := $(WORKSPACE_ROOT)/wevibe-sim
 SDK_WASM_PKG_DIR := $(WORKSPACE_ROOT)/wevibe-sdk/pkg
 SDK_WASM_VENDOR_DIR := $(WEVIBE_DASHBOARD_DIR)/vendor/wevibe-sdk-wasm
 EXTRACTION_PROMPTS_SRC_DIR := $(WORKSPACE_ROOT)/wevibe-mcp/prompts/memory-extraction
@@ -19,7 +21,7 @@ EXTRACTION_PROMPTS_VENDOR_DIR := $(WEVIBE_SERVER_DIR)/wevibe-hub/internal/api/ha
 PROTO_COSMOS_IMAGE  := ghcr.io/cosmos/proto-builder:0.18.1
 PROTO_BUF_IMAGE     := bufbuild/buf:1.34.0
 
-.PHONY: stop-host docker-up docker-build-fast docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token sync-sdk-wasm sync-extraction-prompts mcp-up mcp-down mcp-restart mcp-status
+.PHONY: stop-host docker-up docker-build-fast docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token sync-sdk-wasm sync-extraction-prompts mcp-up mcp-down mcp-restart mcp-status parity-check parity-fixtures
 .PHONY: proto-gen proto-gen-chain proto-gen-umbral
 
 # ─── Host process cleanup ───────────────────────────────────────────────────
@@ -108,6 +110,22 @@ replay-gate:
 	@bash ./scripts/replay-gate.sh
 
 # ─── Manual ops ─────────────────────────────────────────────────────────────
+
+# ─── Recall sim<->product parity guard (D-RECALL-ALIGNMENT Stage 1) ──────────
+parity-check:
+	@echo "=== Recall ranking parity: Go (wevibe-hub) vs JS (wevibe-sim) vs shared fixtures ==="
+	@echo "--- Go side (ScoreAndRank against wevibe-protocol/test-vectors) ---"
+	@cd "$(WEVIBE_HUB_DIR)" && go test ./internal/retrieval/... -run 'TestRankingParity|TestScoreAndRank' -count=1
+	@echo "--- JS side (rank.mjs against the same fixtures) ---"
+	@cd "$(WEVIBE_SIM_DIR)" && npm run --silent sim:parity
+	@echo "=== parity OK ==="
+
+# Regenerate the shared golden fixtures FROM the validated sim ranker (rank.mjs).
+# Run this ONLY when intentionally changing the ranking contract; then re-run parity-check.
+parity-fixtures:
+	@echo "=== Regenerating recall-ranking parity fixtures from wevibe-sim/recall-sim/pipeline/rank.mjs ==="
+	@cd "$(WEVIBE_SIM_DIR)" && node recall-sim/parity/gen-parity-fixtures.mjs
+	@echo "=== fixtures written to wevibe-protocol/test-vectors/recall-ranking-parity.json ==="
 
 mcp-up:
 	@echo "=== Starting dashboard MCP launchd supervisor ==="
