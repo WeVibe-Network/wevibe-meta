@@ -11,13 +11,15 @@ WEVIBE_SERVER_DIR := $(WORKSPACE_ROOT)/wevibe-server
 WEVIBE_DASHBOARD_DIR := $(WEVIBE_SERVER_DIR)/wevibe-dashboard
 SDK_WASM_PKG_DIR := $(WORKSPACE_ROOT)/wevibe-sdk/pkg
 SDK_WASM_VENDOR_DIR := $(WEVIBE_DASHBOARD_DIR)/vendor/wevibe-sdk-wasm
+EXTRACTION_PROMPTS_SRC_DIR := $(WORKSPACE_ROOT)/wevibe-mcp/prompts/memory-extraction
+EXTRACTION_PROMPTS_VENDOR_DIR := $(WEVIBE_SERVER_DIR)/wevibe-hub/internal/api/handlers/prompts/memory-extraction
 
 # Proto generation image pins. R-DOCKER-PINNED — never use :latest.
 # See DECISIONS.md D-14.21 / R-PROTO-REGEN.
 PROTO_COSMOS_IMAGE  := ghcr.io/cosmos/proto-builder:0.18.1
 PROTO_BUF_IMAGE     := bufbuild/buf:1.34.0
 
-.PHONY: stop-host docker-up docker-build-fast docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token sync-sdk-wasm
+.PHONY: stop-host docker-up docker-build-fast docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token sync-sdk-wasm sync-extraction-prompts mcp-up mcp-down mcp-restart mcp-status
 .PHONY: proto-gen proto-gen-chain proto-gen-umbral
 
 # ─── Host process cleanup ───────────────────────────────────────────────────
@@ -107,6 +109,22 @@ replay-gate:
 
 # ─── Manual ops ─────────────────────────────────────────────────────────────
 
+mcp-up:
+	@echo "=== Starting dashboard MCP launchd supervisor ==="
+	@bash ./scripts/mcp-supervisor.sh up
+
+mcp-down:
+	@echo "=== Stopping dashboard MCP launchd supervisor ==="
+	@bash ./scripts/mcp-supervisor.sh down
+
+mcp-restart:
+	@echo "=== Restarting dashboard MCP launchd supervisor ==="
+	@bash ./scripts/mcp-supervisor.sh restart
+
+mcp-status:
+	@echo "=== Dashboard MCP launchd supervisor status ==="
+	@bash ./scripts/mcp-supervisor.sh status
+
 clean: docker-down stop-host
 	@echo "Stack torn down. Volumes wiped. Host processes stopped."
 
@@ -120,6 +138,12 @@ sync-sdk-wasm:
 	@cp "$(SDK_WASM_PKG_DIR)/wevibe_sdk_wasm.d.ts" "$(SDK_WASM_VENDOR_DIR)/wevibe_sdk_wasm.d.ts"
 	@cp "$(SDK_WASM_PKG_DIR)/package.json" "$(SDK_WASM_VENDOR_DIR)/package.json"
 	@echo "Synced wevibe-sdk WASM bundle into $(SDK_WASM_VENDOR_DIR)"
+
+sync-extraction-prompts:
+	@echo "=== Syncing extraction prompt fragments into hub ==="
+	@mkdir -p "$(EXTRACTION_PROMPTS_VENDOR_DIR)"
+	@cp "$(EXTRACTION_PROMPTS_SRC_DIR)"/*.md "$(EXTRACTION_PROMPTS_VENDOR_DIR)/"
+	@echo "Synced extraction prompts into $(EXTRACTION_PROMPTS_VENDOR_DIR)"
 
 # ─── Proto generation (R-PROTO-REGEN / R-DOCKER-PINNED / R-NO-LOCAL-PROTOC) ─
 
