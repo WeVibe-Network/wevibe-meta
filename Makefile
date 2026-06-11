@@ -73,7 +73,7 @@ health:
 	@printf "Qdrant (6333, container):    " && curl -sf http://localhost:6333/healthz > /dev/null && echo "✓" || echo "✗ UNREACHABLE"
 	@printf "Chain RPC (26657, container):" && curl -sf http://localhost:26657/status > /dev/null && echo "✓" || echo "✗ UNREACHABLE"
 	@printf "Social Graph (4470, container):" && curl -sf http://localhost:4470/v1/health > /dev/null && echo "✓" || echo "✗ UNREACHABLE"
-	@printf "wevibe-mcp (4450, container):  " && TOKEN=$$(docker exec wevibe-mcp cat /root/.wevibe/mcp-session-token 2>/dev/null); [ -n "$$TOKEN" ] && curl -sf -H "Authorization: Bearer $$TOKEN" http://127.0.0.1:4450/v1/health > /dev/null && echo "✓" || echo "✗ UNREACHABLE"
+	@printf "wevibe-mcp (4452, container):  " && TOKEN=$$(docker exec wevibe-mcp cat /root/.wevibe/mcp-session-token 2>/dev/null); [ -n "$$TOKEN" ] && curl -sf -H "Authorization: Bearer $$TOKEN" http://127.0.0.1:4452/v1/health > /dev/null && echo "✓" || echo "✗ UNREACHABLE"
 	@printf "Ollama (11434, HOST):        " && curl -sf http://localhost:11434/api/tags > /dev/null && echo "✓" || echo "✗ UNREACHABLE (start Ollama.app)"
 
 # ─── Dogfood (full test cycle) ──────────────────────────────────────────────
