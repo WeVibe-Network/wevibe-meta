@@ -21,7 +21,7 @@ EXTRACTION_PROMPTS_VENDOR_DIR := $(WEVIBE_SERVER_DIR)/wevibe-hub/internal/api/ha
 PROTO_COSMOS_IMAGE  := ghcr.io/cosmos/proto-builder:0.18.1
 PROTO_BUF_IMAGE     := bufbuild/buf:1.34.0
 
-.PHONY: stop-host docker-up docker-build-fast docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token sync-sdk-wasm sync-extraction-prompts mcp-up mcp-down mcp-restart mcp-status parity-check parity-fixtures
+.PHONY: stop-host docker-up docker-build-fast docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token sync-sdk-wasm sync-extraction-prompts mcp-up mcp-down mcp-restart mcp-status parity-check parity-fixtures contributor-up contributor-down contributor-restart contributor-status redeploy
 .PHONY: proto-gen proto-gen-chain proto-gen-umbral
 
 # ─── Host process cleanup ───────────────────────────────────────────────────
@@ -63,6 +63,34 @@ docker-down:
 	@cd "$(WEVIBE_SERVER_DIR)" && docker compose down -v
 	@docker rm -f wevibe-validator 2>/dev/null || true
 	@docker rm -f echo-validator 2>/dev/null || true
+
+# ─── Contributor dashboard (host Next.js dev server on :3001) ───────────────
+# The leader dashboard runs in Docker (:3000). The CONTRIBUTOR dashboard runs on
+# the host (:3001) so it can reach the host MCP (:4450). Its `.next` dev cache
+# reliably corrupts on every stack rebuild — these targets wipe the cache and
+# restart it in one command (detached, logged to wevibe-meta/.logs/). Use
+# `make redeploy` for the full "I changed code" button (wipe+rebuild+:3001).
+
+contributor-up:
+	@bash ./scripts/contributor-dashboard.sh up
+
+contributor-down:
+	@bash ./scripts/contributor-dashboard.sh down
+
+contributor-restart:
+	@bash ./scripts/contributor-dashboard.sh restart
+
+contributor-status:
+	@bash ./scripts/contributor-dashboard.sh status
+
+# One-button redeploy: wipe + rebuild the Docker stack AND clear-cache+restart
+# the host :3001 contributor dashboard. Replaces the manual
+# docker-down → docker-up → rm -rf .next → restart :3001 dance.
+# NOTE: still restart opencode yourself to reload the host MCP dist (:4450/:4451).
+redeploy: docker-down docker-up contributor-restart
+	@echo ""
+	@echo "=== ♻️  Redeploy complete — stack rebuilt + :3001 cache cleared & restarted ==="
+	@echo "    Reminder: restart opencode to reload the host MCP (:4450/:4451) dist."
 
 # ─── Health check (against running stack) ──────────────────────────────────
 
