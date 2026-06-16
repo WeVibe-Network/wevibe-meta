@@ -4,6 +4,7 @@ import { loadState, getIdentity } from '../lib/state.js';
 import { seedFullScenario } from '../lib/seeder.js';
 import { buildBodySignedPayload } from '../lib/auth.js';
 import * as canonical from '../lib/canonical.js';
+import { EMBEDDING_MODEL_ID } from '../lib/config.js';
 import type { TestIdentity } from '../lib/identity.js';
 import { uint8ToHex } from '../lib/identity.js';
 import { generate_dek, seal_to_pubkey } from 'wevibe-sdk-wasm';
@@ -131,7 +132,7 @@ async function main() {
       keywords: [],
       keyword_weights: {},
       vector: [],
-      embedding_model_id: 'nomic-embed-text',
+      embedding_model_id: EMBEDDING_MODEL_ID,
       moderator_sig: uint8ToHex(new Uint8Array(64)),
     }, msg);
 

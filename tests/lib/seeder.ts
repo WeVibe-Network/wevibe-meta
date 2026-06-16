@@ -3,6 +3,7 @@ import { generateFreshState, saveState, getIdentity } from './state.js';
 import { encryptMemory, signSubmission } from './crypto.js';
 import { generate_dek, seal_to_pubkey } from 'wevibe-sdk-wasm';
 import { uint8ToHex } from './identity.js';
+import { EMBEDDING_MODEL_ID } from './config.js';
 import { createHash } from 'node:crypto';
 
 const MEMORIES = [
@@ -79,7 +80,8 @@ export async function seedFullScenario(): Promise<SeederResult> {
       contributor_pubkey: contributor.pubkeyHex,
       contributor_sig: sig,
       stack_hint: mem.stack,
-    });
+      memory_type: 'memory',
+    }, contributor);
   }
   console.log(`  Submitted ${submissions.length} memories`);
 
@@ -98,7 +100,7 @@ export async function seedFullScenario(): Promise<SeederResult> {
       keywords: sub.topic.split(' ').map(k => ({ keyword: k, weight: 0.8 })),
       keyword_weights: { [sub.topic]: 0.8 },
       vector,
-      embedding_model_id: 'nomic-embed-text',
+      embedding_model_id: EMBEDDING_MODEL_ID,
       moderator_sig: sig,
       signed_by: moderator.pubkeyHex,
     }, moderator);

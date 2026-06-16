@@ -58,7 +58,8 @@ await runner.scenario('Submit encrypted memory', async () => {
     contributor_pubkey: contributor.pubkeyHex,
     contributor_sig: sig,
     stack_hint: stackHint,
-  });
+    memory_type: 'memory',
+  }, contributor);
 
   runner.print(`  Response status: ${resp.status}`);
   runner.print(`  Submission hash: ${resp.submission_hash.slice(0, 16)}...`);
@@ -105,7 +106,8 @@ await runner.scenario('Submit memory with different stack hints', async () => {
       contributor_pubkey: contributor.pubkeyHex,
       contributor_sig: sig,
       stack_hint: mem.stack,
-    });
+      memory_type: 'memory',
+    }, contributor);
 
     hashes.push(resp.submission_hash);
     runner.print(`  Submitted: ${mem.stack.join(', ')} → ${resp.status}`);
@@ -148,7 +150,8 @@ await runner.scenario('Submit memory during rotation (edge case)', async () => {
       contributor_pubkey: contributor.pubkeyHex,
       contributor_sig: sig,
       stack_hint: ['rotation', 'edge-case'],
-    });
+      memory_type: 'memory',
+    }, contributor);
 
     runner.print(`  Response status: ${resp.status}`);
     return `Submitted during rotation, status=${resp.status}`;

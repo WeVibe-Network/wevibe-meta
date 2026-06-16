@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { HubClient } from '../lib/hub-client.js';
 import { loadState, getIdentity } from '../lib/state.js';
 import { encryptMemory, signSubmission } from '../lib/crypto.js';
+import { EMBEDDING_MODEL_ID } from '../lib/config.js';
 import { createHash } from 'node:crypto';
 
 describe('moderator: approve-flow', () => {
@@ -26,7 +27,8 @@ describe('moderator: approve-flow', () => {
       contributor_pubkey: contributor.pubkeyHex,
       contributor_sig: contributorSig,
       stack_hint: ['test'],
-    });
+      memory_type: 'memory',
+    }, contributor);
 
     const queue = await client.getModerationQueue(state.orgId, moderator);
     expect(queue.length).toBeGreaterThan(0);
@@ -47,7 +49,7 @@ describe('moderator: approve-flow', () => {
       keywords: [{ keyword: 'test', weight: 0.9 }],
       keyword_weights: { test: 0.9 },
       vector,
-      embedding_model_id: 'nomic-embed-text',
+      embedding_model_id: EMBEDDING_MODEL_ID,
       moderator_sig: signSubmission(moderator, encResult.submissionHash),
       signed_by: moderator.pubkeyHex,
     };

@@ -4,6 +4,7 @@ import { generateFreshState, saveState, getIdentity } from '../lib/state.js';
 import { encryptMemory, signSubmission } from '../lib/crypto.js';
 import { generate_dek, seal_to_pubkey } from 'wevibe-sdk-wasm';
 import { uint8ToHex, signData } from '../lib/identity.js';
+import { EMBEDDING_DIM, EMBEDDING_MODEL_ID } from '../lib/config.js';
 
 describe('e2e: stress scenarios', () => {
   const client = new HubClient();
@@ -38,7 +39,8 @@ describe('e2e: stress scenarios', () => {
         contributor_pubkey: contributor.pubkeyHex,
         contributor_sig: sig,
         stack_hint: [`item-${i}`],
-      }));
+        memory_type: 'memory',
+      }, contributor));
     }
     const results = await Promise.all(promises);
     const allPending = results.every(r => (r as Record<string, unknown>).status === 'pending');
@@ -60,8 +62,8 @@ describe('e2e: stress scenarios', () => {
         wrapped_dek_enc: '',
         keywords: [{ keyword: `keyword-${i}`, weight: 0.5 }],
         keyword_weights: { [`keyword-${i}`]: 0.5 },
-        vector: Array(768).fill(0.01),
-        embedding_model_id: 'nomic-embed-text',
+        vector: Array(EMBEDDING_DIM).fill(0.01),
+        embedding_model_id: EMBEDDING_MODEL_ID,
         moderator_sig: signSubmission(moderator, hash),
         signed_by: moderator.pubkeyHex,
       }, moderator);
@@ -115,7 +117,8 @@ describe('e2e: stress scenarios', () => {
       contributor_pubkey: contributor.pubkeyHex,
       contributor_sig: sig,
       stack_hint: ['rotation-test'],
-    });
+      memory_type: 'memory',
+    }, contributor);
 
     expect(result.status).toMatch(/^(pending|buffered)$/);
     if (wasPending) {

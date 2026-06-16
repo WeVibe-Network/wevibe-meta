@@ -1,3 +1,6 @@
+export const EMBEDDING_MODEL_ID = 'openai/text-embedding-3-large';
+export const EMBEDDING_DIM = 3072;
+
 export const CONFIG = {
   hubUrl: process.env.WEVIBE_HUB_URL ?? 'http://localhost:4440',
   chainRpcUrl: process.env.WEVIBE_CHAIN_RPC ?? 'http://localhost:26657',

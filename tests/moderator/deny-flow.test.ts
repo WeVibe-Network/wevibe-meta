@@ -24,7 +24,8 @@ describe('moderator: deny-flow', () => {
       contributor_pubkey: contributor.pubkeyHex,
       contributor_sig: contributorSig,
       stack_hint: ['test'],
-    });
+      memory_type: 'memory',
+    }, contributor);
 
     const result = await client.denySubmission(
       state.orgId, encResult.submissionHash, 'spam content', moderator,

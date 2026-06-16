@@ -24,7 +24,8 @@ describe('contributor: submit-memory', () => {
       contributor_pubkey: contributor.pubkeyHex,
       contributor_sig: contributorSig,
       stack_hint: ['test', 'memory'],
-    });
+      memory_type: 'memory',
+    }, contributor);
 
     expect(result.status).toBe('pending');
     expect(result.submission_hash).toBe(encResult.submissionHash);

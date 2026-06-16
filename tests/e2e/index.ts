@@ -6,6 +6,7 @@ import { uint8ToHex, signData } from '../lib/identity.js';
 import { createHash } from 'node:crypto';
 import { buildBodySignedPayload } from '../lib/auth.js';
 import * as canonical from '../lib/canonical.js';
+import { EMBEDDING_MODEL_ID } from '../lib/config.js';
 
 async function main() {
   console.log('WeVibe E2E Full Lifecycle Automation');
@@ -54,7 +55,7 @@ async function main() {
   for (let i = 0; i < memoryTexts.length; i++) {
     const enc = encryptMemory(memoryTexts[i], modPubkey);
     const sig = signSubmission(contributor, enc.submissionHash);
-    await client.submitMemory(state.orgId, { org_id: state.orgId, epoch_id: 1, ciphertext: enc.ciphertextHex, wrapped_dek_mod: enc.wrappedDekModHex, submission_hash: enc.submissionHash, contributor_pubkey: contributor.pubkeyHex, contributor_sig: sig, stack_hint: stackHints[i] });
+    await client.submitMemory(state.orgId, { org_id: state.orgId, epoch_id: 1, ciphertext: enc.ciphertextHex, wrapped_dek_mod: enc.wrappedDekModHex, submission_hash: enc.submissionHash, contributor_pubkey: contributor.pubkeyHex, contributor_sig: sig, stack_hint: stackHints[i], memory_type: 'memory' }, contributor);
     state.submissions.push({ hash: enc.submissionHash, plaintext: memoryTexts[i], ciphertextHex: enc.ciphertextHex, wrappedDekModHex: enc.wrappedDekModHex, dek: uint8ToHex(enc.dek), stackHint: stackHints[i], status: 'pending' });
   }
   console.log(`  Submitted ${memoryTexts.length} memories`);
@@ -69,7 +70,7 @@ async function main() {
     const embedResp = await client.testEmbed('docker');
     const vector = embedResp.vector.map(Number);
     const sig = signSubmission(moderator, sub.hash);
-    await client.approveSubmission(state.orgId, sub.hash, { epoch_id: 1, approved_cid: approvedCid, wrapped_dek_enc: '', keywords: [{ keyword: 'docker', weight: 0.8 }], keyword_weights: { docker: 0.8 }, vector, embedding_model_id: 'nomic-embed-text', moderator_sig: sig, signed_by: moderator.pubkeyHex }, moderator);
+    await client.approveSubmission(state.orgId, sub.hash, { epoch_id: 1, approved_cid: approvedCid, wrapped_dek_enc: '', keywords: [{ keyword: 'docker', weight: 0.8 }], keyword_weights: { docker: 0.8 }, vector, embedding_model_id: EMBEDDING_MODEL_ID, moderator_sig: sig, signed_by: moderator.pubkeyHex }, moderator);
     state.approvedCIDs.push(approvedCid);
     sub.status = 'approved';
     sub.approvedCid = approvedCid;
@@ -132,7 +133,7 @@ async function main() {
   console.log('\nPhase 11: Contributor Submits Post-Rotation Memory');
   const enc = encryptMemory('Terraform infrastructure as code patterns', leader.xPub);
   const sig = signSubmission(contributor, enc.submissionHash);
-  const submitResult = await client.submitMemory(state.orgId, { org_id: state.orgId, epoch_id: state.currentEpoch, ciphertext: enc.ciphertextHex, wrapped_dek_mod: enc.wrappedDekModHex, submission_hash: enc.submissionHash, contributor_pubkey: contributor.pubkeyHex, contributor_sig: sig, stack_hint: ['terraform'] });
+  const submitResult = await client.submitMemory(state.orgId, { org_id: state.orgId, epoch_id: state.currentEpoch, ciphertext: enc.ciphertextHex, wrapped_dek_mod: enc.wrappedDekModHex, submission_hash: enc.submissionHash, contributor_pubkey: contributor.pubkeyHex, contributor_sig: sig, stack_hint: ['terraform'], memory_type: 'memory' }, contributor);
   console.log(`  Post-rotation submit status: ${submitResult.status}`);
 
   console.log('\nPhase 12: New Moderator Approves Post-Rotation Memory');
@@ -143,7 +144,7 @@ async function main() {
     const embedResp = await client.testEmbed('terraform');
     const vector = embedResp.vector.map(Number);
     const newSig = signSubmission(consumerIdentity, hash);
-    await client.approveSubmission(state.orgId, hash, { epoch_id: state.currentEpoch, approved_cid: approvedCid, wrapped_dek_enc: '', keywords: [{ keyword: 'terraform', weight: 0.8 }], keyword_weights: { terraform: 0.8 }, vector, embedding_model_id: 'nomic-embed-text', moderator_sig: newSig, signed_by: consumerIdentity.pubkeyHex }, consumerIdentity);
+    await client.approveSubmission(state.orgId, hash, { epoch_id: state.currentEpoch, approved_cid: approvedCid, wrapped_dek_enc: '', keywords: [{ keyword: 'terraform', weight: 0.8 }], keyword_weights: { terraform: 0.8 }, vector, embedding_model_id: EMBEDDING_MODEL_ID, moderator_sig: newSig, signed_by: consumerIdentity.pubkeyHex }, consumerIdentity);
     console.log('  Post-rotation memory approved by new moderator');
   }
 

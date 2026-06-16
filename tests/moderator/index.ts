@@ -6,6 +6,7 @@ import { encryptMemory, signSubmission } from '../lib/crypto.js';
 import { approveSubmissionMessage, denySubmissionMessage, type KeywordWithWeight } from '../lib/canonical.js';
 import { buildWeVibeSignedHeaders, buildBodySignedPayload } from '../lib/auth.js';
 import { seedFullScenario } from '../lib/seeder.js';
+import { EMBEDDING_MODEL_ID } from '../lib/config.js';
 import { createHash } from 'node:crypto';
 
 async function main() {
@@ -82,7 +83,7 @@ async function main() {
       keywords,
       keyword_weights: Object.fromEntries(keywords.map(k => [k.keyword, k.weight])),
       vector,
-      embedding_model_id: 'nomic-embed-text',
+      embedding_model_id: EMBEDDING_MODEL_ID,
       moderator_sig: signature,
       signed_by: moderatorIdentity.pubkeyHex,
     }, moderatorIdentity);
@@ -148,7 +149,8 @@ async function main() {
       contributor_pubkey: contributorIdentity.pubkeyHex,
       contributor_sig: sig,
       stack_hint: ['k8s', 'kubernetes', 'pods'],
-    });
+      memory_type: 'memory',
+    }, contributorIdentity);
 
     runner.print(`Submitted new memory: ${encResult.submissionHash}`);
     runner.print(`Status: ${(submitResult as Record<string, unknown>).status}`);
@@ -160,7 +162,7 @@ async function main() {
       keywords: [{ keyword: 'k8s', weight: 0.8 }, { keyword: 'kubernetes', weight: 0.8 }],
       keyword_weights: { k8s: 0.8, kubernetes: 0.8 },
       vector: (await client.testEmbed('k8s kubernetes')).vector.map(Number),
-      embedding_model_id: 'nomic-embed-text',
+      embedding_model_id: EMBEDDING_MODEL_ID,
       moderator_sig: sig,
       signed_by: moderatorIdentity.pubkeyHex,
     }, moderatorIdentity);

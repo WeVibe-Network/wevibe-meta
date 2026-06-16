@@ -31,7 +31,8 @@ describe('contributor: multi-submit', () => {
         contributor_pubkey: contributor.pubkeyHex,
         contributor_sig: sig,
         stack_hint: text.split(' ').slice(0, 2),
-      });
+        memory_type: 'memory',
+      }, contributor);
       expect(result.status).toBe('pending');
       hashes.push(enc.submissionHash);
     }

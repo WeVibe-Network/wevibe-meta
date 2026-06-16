@@ -135,10 +135,10 @@ async function recall(
   consumer: TestIdentity,
 ): Promise<QueryResponse> {
   const headers = buildWeVibeSignedHeaders(consumer);
-  // Qdrant requires a non-empty vector of the indexed dimension (nomic-embed-text:
-  // 768d). The dogfood production path computes this client-side via MCP; for the
-  // smoke test we use the WEVIBE_TEST_MODE /v1/test/embed endpoint which calls the
-  // same embed package the chain watcher would use.
+  // Qdrant requires a non-empty vector of the indexed dimension. The WEVIBE_TEST_MODE
+  // /v1/test/embed endpoint now calls the dashboard-SoT OpenRouter embedder
+  // (openai/text-embedding-3-large, 3072-dim). The dogfood production path computes
+  // this client-side via MCP.
   const vec = await hub.testEmbed(keyword);
   const { bodyText } = await postJSON(
     'recall',

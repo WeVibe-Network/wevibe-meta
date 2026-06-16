@@ -49,6 +49,10 @@ export class HubClient {
     return this.request('GET', '/v1/test/health');
   }
 
+  async testReset(): Promise<{ status: string }> {
+    return this.request('POST', '/v1/test/reset');
+  }
+
   async testEmbed(text: string): Promise<{ vector: number[]; model: string; dim: number }> {
     return this.request('POST', '/v1/test/embed', { text });
   }
