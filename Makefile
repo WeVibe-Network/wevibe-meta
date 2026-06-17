@@ -10,6 +10,7 @@ WORKSPACE_ROOT := $(abspath ..)
 WEVIBE_SERVER_DIR := $(WORKSPACE_ROOT)/wevibe-server
 WEVIBE_HUB_DIR := $(WEVIBE_SERVER_DIR)/wevibe-hub
 WEVIBE_DASHBOARD_DIR := $(WEVIBE_SERVER_DIR)/wevibe-dashboard
+WEVIBE_MCP_DIR := $(WORKSPACE_ROOT)/wevibe-mcp
 WEVIBE_SIM_DIR := $(WORKSPACE_ROOT)/wevibe-sim
 SDK_WASM_PKG_DIR := $(WORKSPACE_ROOT)/wevibe-sdk/pkg
 SDK_WASM_VENDOR_DIR := $(WEVIBE_DASHBOARD_DIR)/vendor/wevibe-sdk-wasm
@@ -21,7 +22,7 @@ EXTRACTION_PROMPTS_VENDOR_DIR := $(WEVIBE_SERVER_DIR)/wevibe-hub/internal/api/ha
 PROTO_COSMOS_IMAGE  := ghcr.io/cosmos/proto-builder:0.18.1
 PROTO_BUF_IMAGE     := bufbuild/buf:1.34.0
 
-.PHONY: stop-host docker-up docker-build-fast docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token sync-sdk-wasm sync-extraction-prompts mcp-up mcp-down mcp-restart mcp-status parity-check parity-fixtures contributor-up contributor-down contributor-restart contributor-status redeploy
+.PHONY: stop-host docker-up docker-build-fast docker-up-fast docker-down dogfood-fast-down health dogfood dogfood-fast dogfood-health dogfood-pipeline replay-gate clean wevibe-mcp-token sync-sdk-wasm sync-extraction-prompts mcp-up mcp-down mcp-restart mcp-status parity-check parity-fixtures contributor-up contributor-down contributor-restart contributor-status host-mcp-build backend-up backend-down backend-restart backend-status redeploy
 .PHONY: proto-gen proto-gen-chain proto-gen-umbral
 
 # ─── Host process cleanup ───────────────────────────────────────────────────
@@ -83,14 +84,42 @@ contributor-restart:
 contributor-status:
 	@bash ./scripts/contributor-dashboard.sh status
 
-# One-button redeploy: wipe + rebuild the Docker stack AND clear-cache+restart
-# the host :3001 contributor dashboard. Replaces the manual
-# docker-down → docker-up → rm -rf .next → restart :3001 dance.
-# NOTE: still restart opencode yourself to reload the host MCP dist (:4450/:4451).
-redeploy: docker-down docker-up contributor-restart
+# ─── Host MCP backends (NOT Docker) ─────────────────────────────────────────
+# Two host node processes serve the dashboards/plugin and MUST run the freshly
+# built dist:
+#   :4450  dist/server.js          — opencode's MCP (recall). Reloaded by
+#                                     restarting opencode (manager can't do this).
+#   :4451  dist/dashboard-server.js — moderation/decrypt + leader-Verify embed
+#                                     tool (holds the mod key). Managed here.
+# `host-mcp-build` rebuilds the shared dist; `backend-restart` relaunches :4451
+# on it. After every code change to wevibe-mcp, the :4451 backend was silently
+# stale until manually PID-hunted — these targets (and `redeploy`) fix that.
+
+host-mcp-build:
+	@echo "=== Building host MCP dist (wevibe-mcp) ==="
+	@cd "$(WEVIBE_MCP_DIR)" && npm run build
+
+backend-up:
+	@bash ./scripts/dashboard-backend.sh up
+
+backend-down:
+	@bash ./scripts/dashboard-backend.sh down
+
+backend-restart:
+	@bash ./scripts/dashboard-backend.sh restart
+
+backend-status:
+	@bash ./scripts/dashboard-backend.sh status
+
+# One-button redeploy: wipe + rebuild the Docker stack, rebuild the host MCP
+# dist, restart the host :4451 moderation/Verify backend on the fresh dist, and
+# clear-cache+restart the host :3001 contributor dashboard.
+# NOTE: the :4450 opencode MCP still needs an opencode restart (only opencode
+# can reload its own child) — that is the one remaining manual step.
+redeploy: docker-down docker-up host-mcp-build backend-restart contributor-restart
 	@echo ""
-	@echo "=== ♻️  Redeploy complete — stack rebuilt + :3001 cache cleared & restarted ==="
-	@echo "    Reminder: restart opencode to reload the host MCP (:4450/:4451) dist."
+	@echo "=== ♻️  Redeploy complete — stack rebuilt + host dist rebuilt + :4451 & :3001 restarted ==="
+	@echo "    Reminder: restart opencode to reload the :4450 MCP dist (only opencode can)."
 
 # ─── Health check (against running stack) ──────────────────────────────────
 
